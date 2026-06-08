@@ -1,0 +1,6 @@
+image_topic: /camera/color/image_raw
+camera_config: /opt/orbslam3_ws/src/ros2_orb_slam3/orb_slam3/config/Monocular/RealSense_D435i.yaml
+vocabulary: /opt/orbslam3_ws/src/ros2_orb_slam3/orb_slam3/Vocabulary/ORBvoc.txt.bin
+pose_topic: /slam/pose
+world_frame: map
+camera_frame: camera_color_optical_frame

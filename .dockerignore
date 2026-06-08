@@ -1,0 +1,7 @@
+.git
+.github
+bags
+output
+*.bag
+*.db3
+*.mcap

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -eo pipefail
+source /opt/ros/${ROS_DISTRO:-jazzy}/setup.bash
+source /opt/orbslam3_ws/install/setup.bash
+
+IMAGE_TOPIC=${IMAGE_TOPIC:-/camera/color/image_raw}
+CAMERA_CONFIG=${CAMERA_CONFIG:-/opt/orbslam3_ws/src/ros2_orb_slam3/orb_slam3/config/Monocular/RealSense_D435i.yaml}
+VOCABULARY=${VOCABULARY:-/opt/orbslam3_ws/src/ros2_orb_slam3/orb_slam3/Vocabulary/ORBvoc.txt.bin}
+
+exec ros2 run ros2_orb_slam3 mono_node_cpp   --ros-args   -p voc_file:=${VOCABULARY}   -p settings_file:=${CAMERA_CONFIG}   -r /camera:=/camera/color   -r /image_raw:=${IMAGE_TOPIC}

@@ -1,0 +1,25 @@
+services:
+  slam:
+    image: ghcr.io/bjoernellens1/splatograph-orbslam3:jazzy
+    network_mode: host
+    ipc: host
+    environment:
+      ROS_DISTRO: jazzy
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+      RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+    volumes:
+      - ./config:/config:ro
+      - ./output:/output
+    command: ["slam-launch"]
+
+  splatograph:
+    image: ghcr.io/bjoernellens1/splatograph-ros2:jazzy
+    network_mode: host
+    ipc: host
+    environment:
+      ROS_DISTRO: jazzy
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+      RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+    volumes:
+      - ./output:/workspace/splatograph/output
+    command: ["bash", "-lc", "source /opt/ros/jazzy/setup.bash && ros2 topic list && sleep infinity"]

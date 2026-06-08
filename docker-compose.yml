@@ -1,0 +1,30 @@
+services:
+  slam:
+    image: ghcr.io/bjoernellens1/splatograph-orbslam3:jazzy
+    build:
+      context: .
+    network_mode: host
+    ipc: host
+    environment:
+      ROS_DISTRO: jazzy
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+      RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+      RCUTILS_COLORIZED_OUTPUT: '1'
+    volumes:
+      - ./config:/config:ro
+      - ./bags:/bags:ro
+      - ./output:/output
+    command: ["slam-launch"]
+
+  bag:
+    image: ros:jazzy-ros-base-noble
+    profiles: ["bag"]
+    network_mode: host
+    ipc: host
+    environment:
+      ROS_DISTRO: jazzy
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+      RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+    volumes:
+      - ./bags:/bags:ro
+    command: ["bash", "-lc", "source /opt/ros/jazzy/setup.bash && ros2 bag play ${BAG_PATH:-/bags/input} --clock"]

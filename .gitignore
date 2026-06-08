@@ -1,0 +1,7 @@
+.env
+output/
+bags/
+*.bag
+*.db3
+*.mcap
+__pycache__/
