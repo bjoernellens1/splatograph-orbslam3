@@ -10,6 +10,7 @@ RUN git clone --depth 1 --branch v0.9.5 https://github.com/stevenlovegrove/Pango
 
 WORKDIR /opt/orbslam3_ws/src
 RUN git clone --depth 1 --branch jazzy https://github.com/Mechazo11/ros2_orb_slam3.git
+RUN sed -i 's/enablePangolinWindow = true/enablePangolinWindow = false/' ros2_orb_slam3/src/common.cpp     && sed -i 's/enableOpenCVWindow = true/enableOpenCVWindow = false/' ros2_orb_slam3/src/common.cpp
 WORKDIR /opt/orbslam3_ws
 RUN bash -lc 'source /opt/ros/${ROS_DISTRO}/setup.bash && colcon build --merge-install --cmake-args -DCMAKE_BUILD_TYPE=Release'
 
@@ -21,7 +22,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends       libopencv
 COPY --from=builder /usr/local /usr/local
 COPY --from=builder /opt/orbslam3_ws /opt/orbslam3_ws
 COPY scripts/slam-launch /usr/local/bin/slam-launch
+COPY scripts/rosbag-image-adapter.py /usr/local/bin/rosbag-image-adapter.py
 COPY scripts/smoke.sh /usr/local/bin/splatograph-smoke
-RUN echo /usr/local/lib > /etc/ld.so.conf.d/pangolin.conf     && ldconfig     && chmod +x /usr/local/bin/slam-launch /usr/local/bin/splatograph-smoke
+RUN echo /usr/local/lib > /etc/ld.so.conf.d/pangolin.conf     && ldconfig     && chmod +x /usr/local/bin/slam-launch /usr/local/bin/rosbag-image-adapter.py /usr/local/bin/splatograph-smoke
 ENTRYPOINT ["/ros_entrypoint.sh"]
 CMD ["slam-launch"]

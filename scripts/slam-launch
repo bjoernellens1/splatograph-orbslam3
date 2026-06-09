@@ -4,7 +4,18 @@ source /opt/ros/${ROS_DISTRO:-jazzy}/setup.bash
 source /opt/orbslam3_ws/install/setup.bash
 
 IMAGE_TOPIC=${IMAGE_TOPIC:-/camera/color/image_raw}
-CAMERA_CONFIG=${CAMERA_CONFIG:-/opt/orbslam3_ws/src/ros2_orb_slam3/orb_slam3/config/Monocular/RealSense_D435i.yaml}
+CAMERA_CONFIG_NAME=${CAMERA_CONFIG_NAME:-RealSense_D435i}
+CAMERA_CONFIG_DIR=${CAMERA_CONFIG_DIR:-/opt/orbslam3_ws/src/ros2_orb_slam3/orb_slam3/config/Monocular/}
 VOCABULARY=${VOCABULARY:-/opt/orbslam3_ws/src/ros2_orb_slam3/orb_slam3/Vocabulary/ORBvoc.txt.bin}
 
-exec ros2 run ros2_orb_slam3 mono_node_cpp   --ros-args   -p voc_file:=${VOCABULARY}   -p settings_file:=${CAMERA_CONFIG}   -r /camera:=/camera/color   -r /image_raw:=${IMAGE_TOPIC}
+ros2 run ros2_orb_slam3 mono_node_cpp \
+  --ros-args \
+  -p voc_file_arg:=${VOCABULARY} \
+  -p settings_file_path_arg:=${CAMERA_CONFIG_DIR} &
+cpp_pid=$!
+
+IMAGE_TOPIC=${IMAGE_TOPIC} CAMERA_CONFIG_NAME=${CAMERA_CONFIG_NAME} /usr/local/bin/rosbag-image-adapter.py &
+adapter_pid=$!
+
+trap 'kill "${cpp_pid}" "${adapter_pid}" 2>/dev/null || true' EXIT
+wait -n "${cpp_pid}" "${adapter_pid}"
