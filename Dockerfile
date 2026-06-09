@@ -17,11 +17,11 @@ FROM ros:jazzy-ros-base-noble
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 LABEL org.opencontainers.image.source="https://github.com/bjoernellens1/splatograph-orbslam3"       org.opencontainers.image.description="ROS2 Jazzy ORB-SLAM3 container for Splatograph pose input"       org.opencontainers.image.licenses="GPL-3.0"
 ENV ROS_DISTRO=jazzy     DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends       libopencv-dev libboost-system1.83.0 libboost-serialization1.83.0 libssl3       libgl1 libglew2.2 libepoxy0 python3-natsort       ros-jazzy-cv-bridge ros-jazzy-image-transport ros-jazzy-sensor-msgs ros-jazzy-std-msgs     && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends       libopencv-dev libboost-system1.83.0 libboost-serialization1.83.0 libssl3       libgl1 libglew2.2 libepoxy0 libwayland-egl1 libwayland-cursor0 python3-natsort       ros-jazzy-cv-bridge ros-jazzy-image-transport ros-jazzy-sensor-msgs ros-jazzy-std-msgs     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /usr/local /usr/local
 COPY --from=builder /opt/orbslam3_ws /opt/orbslam3_ws
 COPY scripts/slam-launch /usr/local/bin/slam-launch
 COPY scripts/smoke.sh /usr/local/bin/splatograph-smoke
-RUN chmod +x /usr/local/bin/slam-launch /usr/local/bin/splatograph-smoke
+RUN echo /usr/local/lib > /etc/ld.so.conf.d/pangolin.conf     && ldconfig     && chmod +x /usr/local/bin/slam-launch /usr/local/bin/splatograph-smoke
 ENTRYPOINT ["/ros_entrypoint.sh"]
 CMD ["slam-launch"]
