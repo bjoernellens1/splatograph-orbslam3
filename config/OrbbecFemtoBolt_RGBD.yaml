@@ -1,6 +1,6 @@
 %YAML:1.0
 #--------------------------------------------------------------------------------------------
-# Orbbec Femto Mega - RGB-D mode (tuned profile; shares Bolt profile - see OrbbecFemtoBolt_RGBD.yaml)
+# Orbbec Femto Bolt / Mega - RGB-D mode (tuned profile)
 #
 # Bolt and Mega share the same sensor hardware/optics (Mega adds an onboard
 # Jetson for HW depth), so this ORB/depth profile serves BOTH. Intrinsics +
