@@ -10,7 +10,9 @@
 # Usage: run_orbslam_rgbd.sh BAG CONFIG_YAML OUTDIR LABEL [RATE] [DURATION_S]
 #   DURATION_S (optional): cap playback to this many bag-seconds (smoke/iteration).
 set -eo pipefail
-BAG="$1"; CONFIG="$2"; OUTDIR="$3"; LABEL="${4:-run}"; RATE="${5:-0.5}"; DURATION="${6:-0}"
+# RATE default 1.0: profiling showed ORB-SLAM3 RGB-D is real-time at 30fps
+# (29.9 pose/s, 100% coverage at -r 1.0), so -r 0.5 only wastes time.
+BAG="$1"; CONFIG="$2"; OUTDIR="$3"; LABEL="${4:-run}"; RATE="${5:-1.0}"; DURATION="${6:-0}"
 PLAY_EXTRA=""
 [ "$DURATION" != "0" ] && PLAY_EXTRA="--playback-duration $DURATION"
 

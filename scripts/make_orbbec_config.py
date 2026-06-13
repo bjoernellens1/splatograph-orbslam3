@@ -90,7 +90,7 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--topic", default="/camera/color/image_raw")  # for fps note only
     ap.add_argument("--nfeatures", type=int, default=1250)
-    ap.add_argument("--thdepth", type=float, default=40.0)
+    ap.add_argument("--thdepth", type=float, default=60.0)  # tuned (was 40; see OrbbecFemtoBolt_RGBD.yaml)
     ap.add_argument("--stereo-b", type=float, default=0.05)
     ap.add_argument("--scale-factor", type=float, default=1.2)
     ap.add_argument("--nlevels", type=int, default=8)
