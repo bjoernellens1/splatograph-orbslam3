@@ -1,0 +1,66 @@
+%YAML:1.0
+#--------------------------------------------------------------------------------------------
+# Intel RealSense D435i - STEREO mode (left/right infrared, rectified)
+#
+# TEMPLATE / nominal values — no D435i stereo dataset was available to validate.
+# Before use: (1) record IR with the projector/EMITTER OFF (the dot pattern
+# corrupts stereo matching); (2) fill Camera1/Camera2 intrinsics + Stereo.T_c1_c2
+# baseline from YOUR unit (rs-enumerate-devices -c, or /camera/infraN/camera_info).
+# Subscribe rectified IR: /camera/infra1/image_rect_raw, /camera/infra2/image_rect_raw.
+#--------------------------------------------------------------------------------------------
+File.version: "1.0"
+Camera.type: "PinHole"
+
+# Left IR (rectified -> zero distortion). NOMINAL 848x480 — REPLACE per-unit.
+Camera1.fx: 422.0
+Camera1.fy: 422.0
+Camera1.cx: 422.0
+Camera1.cy: 238.0
+Camera1.k1: 0.0
+Camera1.k2: 0.0
+Camera1.p1: 0.0
+Camera1.p2: 0.0
+
+# Right IR (rectified, same intrinsics)
+Camera2.fx: 422.0
+Camera2.fy: 422.0
+Camera2.cx: 422.0
+Camera2.cy: 238.0
+Camera2.k1: 0.0
+Camera2.k2: 0.0
+Camera2.p1: 0.0
+Camera2.p2: 0.0
+
+Camera.width: 848
+Camera.height: 480
+Camera.fps: 30
+Camera.RGB: 0
+
+# Stereo extrinsic c1->c2 (rectified: pure -baseline X translation). D435i IR
+# baseline ~= 0.05 m. REPLACE with your unit's value.
+Stereo.T_c1_c2: !!opencv-matrix
+   rows: 4
+   cols: 4
+   dt: f
+   data: [1.0, 0.0, 0.0, -0.0499,
+          0.0, 1.0, 0.0,  0.0,
+          0.0, 0.0, 1.0,  0.0,
+          0.0, 0.0, 0.0,  1.0]
+Stereo.ThDepth: 40.0
+
+ORBextractor.nFeatures: 1250
+ORBextractor.scaleFactor: 1.2
+ORBextractor.nLevels: 8
+ORBextractor.iniThFAST: 20
+ORBextractor.minThFAST: 7
+
+Viewer.KeyFrameSize: 0.05
+Viewer.KeyFrameLineWidth: 1.0
+Viewer.GraphLineWidth: 0.9
+Viewer.PointSize: 2.0
+Viewer.CameraSize: 0.08
+Viewer.CameraLineWidth: 3.0
+Viewer.ViewpointX: 0.0
+Viewer.ViewpointY: -0.7
+Viewer.ViewpointZ: -3.5
+Viewer.ViewpointF: 500.0

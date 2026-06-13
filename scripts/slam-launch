@@ -1,21 +1,135 @@
 #!/usr/bin/env bash
+# Headless ORB-SLAM3 launch — RGB-D (default) or Monocular (legacy).
+#
+# SLAM_MODE=rgbd  (default): rgbd_node_cpp subscribes directly to color+depth.
+#                             No Python driver or adapter needed.
+# SLAM_MODE=mono  (legacy):  mono_node_cpp + mono_driver_node.py + adapter.
+#
+# Env vars (with defaults):
+#   SLAM_MODE          - "rgbd" or "mono"  (default rgbd)
+#   IMAGE_TOPIC        - raw colour image topic (default /camera/color/image_raw)
+#   DEPTH_TOPIC        - raw depth image topic  (default /camera/depth/image_raw; rgbd only)
+#   CAMERA_CONFIG_NAME - yaml basename without .yaml  (default OrbbecFemtoMega_RGBD / RealSense_D435i)
+#   CAMERA_CONFIG_DIR  - directory containing <CAMERA_CONFIG_NAME>.yaml (default /config/)
+#   CAMERA_CONFIG_PATH - if set, overrides DIR+NAME; must end in .yaml
+#   VOCABULARY         - ORB vocabulary file
+#   ROS_DOMAIN_ID      - DDS domain (default 0)
+#   RMW_IMPLEMENTATION - DDS impl (default rmw_fastrtps_cpp)
 set -eo pipefail
+
+: "${ROS_DOMAIN_ID:=0}"
+export ROS_DOMAIN_ID
+export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
+
 source /opt/ros/${ROS_DISTRO:-jazzy}/setup.bash
 source /opt/orbslam3_ws/install/setup.bash
 
+export LD_LIBRARY_PATH="/opt/ros/${ROS_DISTRO:-jazzy}/lib:/opt/orbslam3_ws/install/lib:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="/usr/local/lib:${LD_LIBRARY_PATH}"
+
+# Translate CAMERA_CONFIG_PATH (full file path) into CAMERA_CONFIG_DIR+NAME
+SLAM_MODE=${SLAM_MODE:-rgbd}
 IMAGE_TOPIC=${IMAGE_TOPIC:-/camera/color/image_raw}
-CAMERA_CONFIG_NAME=${CAMERA_CONFIG_NAME:-RealSense_D435i}
-CAMERA_CONFIG_DIR=${CAMERA_CONFIG_DIR:-/opt/orbslam3_ws/src/ros2_orb_slam3/orb_slam3/config/Monocular/}
+DEPTH_TOPIC=${DEPTH_TOPIC:-/camera/depth/image_raw}
+
+if [ "${SLAM_MODE}" = "rgbd" ]; then
+    CAMERA_CONFIG_NAME=${CAMERA_CONFIG_NAME:-OrbbecFemtoMega_RGBD}
+else
+    CAMERA_CONFIG_NAME=${CAMERA_CONFIG_NAME:-RealSense_D435i}
+fi
+CAMERA_CONFIG_DIR=${CAMERA_CONFIG_DIR:-/config/}
+
+if [ -n "${CAMERA_CONFIG_PATH:-}" ]; then
+  case "${CAMERA_CONFIG_PATH}" in
+    *.yaml)
+      CAMERA_CONFIG_DIR="$(dirname "${CAMERA_CONFIG_PATH}")/"
+      CAMERA_CONFIG_NAME="$(basename "${CAMERA_CONFIG_PATH}" .yaml)"
+      ;;
+    *)
+      echo "slam-launch: CAMERA_CONFIG_PATH must end in .yaml (got: ${CAMERA_CONFIG_PATH})" >&2
+      exit 2
+      ;;
+  esac
+fi
+
 VOCABULARY=${VOCABULARY:-/opt/orbslam3_ws/src/ros2_orb_slam3/orb_slam3/Vocabulary/ORBvoc.txt.bin}
 
-ros2 run ros2_orb_slam3 mono_node_cpp \
-  --ros-args \
+# ── RGB-D mode ──────────────────────────────────────────────────────────────
+if [ "${SLAM_MODE}" = "rgbd" ]; then
+    RGBD_CPP=/opt/orbslam3_ws/install/lib/ros2_orb_slam3/rgbd_node_cpp
+    echo "slam-launch: RGB-D mode  color=${IMAGE_TOPIC}  depth=${DEPTH_TOPIC}"
+    echo "slam-launch: config=${CAMERA_CONFIG_DIR}${CAMERA_CONFIG_NAME}.yaml"
+    "${RGBD_CPP}" --ros-args \
+      -p voc_file_arg:=${VOCABULARY} \
+      -p settings_file_path_arg:=${CAMERA_CONFIG_DIR} \
+      -p settings_name_arg:=${CAMERA_CONFIG_NAME} \
+      -p color_topic:=${IMAGE_TOPIC} \
+      -p depth_topic:=${DEPTH_TOPIC}
+    exit $?
+fi
+
+LIB=/opt/orbslam3_ws/install/lib/ros2_orb_slam3
+IMU_TOPIC=${IMU_TOPIC:-/camera/imu}
+LEFT_TOPIC=${LEFT_TOPIC:-/camera/infra1/image_rect_raw}
+RIGHT_TOPIC=${RIGHT_TOPIC:-/camera/infra2/image_rect_raw}
+
+# ── RGB-D-Inertial mode (Orbbec Femto VIO: colour + depth + IMU) ─────────────
+if [ "${SLAM_MODE}" = "rgbd_inertial" ] || [ "${SLAM_MODE}" = "vio_rgbd" ]; then
+    echo "slam-launch: RGBD-Inertial  color=${IMAGE_TOPIC} depth=${DEPTH_TOPIC} imu=${IMU_TOPIC}  config=${CAMERA_CONFIG_DIR}${CAMERA_CONFIG_NAME}.yaml"
+    "${LIB}/rgbd_inertial_node_cpp" --ros-args \
+      -p voc_file_arg:=${VOCABULARY} \
+      -p settings_file_path_arg:=${CAMERA_CONFIG_DIR} \
+      -p settings_name_arg:=${CAMERA_CONFIG_NAME} \
+      -p color_topic:=${IMAGE_TOPIC} \
+      -p depth_topic:=${DEPTH_TOPIC} \
+      -p imu_topic:=${IMU_TOPIC}
+    exit $?
+fi
+
+# ── Stereo mode (RealSense D435i left/right IR; emitter OFF) ─────────────────
+if [ "${SLAM_MODE}" = "stereo" ]; then
+    echo "slam-launch: Stereo  left=${LEFT_TOPIC} right=${RIGHT_TOPIC}  config=${CAMERA_CONFIG_DIR}${CAMERA_CONFIG_NAME}.yaml"
+    "${LIB}/stereo_node_cpp" --ros-args \
+      -p voc_file_arg:=${VOCABULARY} \
+      -p settings_file_path_arg:=${CAMERA_CONFIG_DIR} \
+      -p settings_name_arg:=${CAMERA_CONFIG_NAME} \
+      -p left_topic:=${LEFT_TOPIC} \
+      -p right_topic:=${RIGHT_TOPIC}
+    exit $?
+fi
+
+# ── Stereo-Inertial mode (RealSense D435i VIO: stereo + IMU) ─────────────────
+if [ "${SLAM_MODE}" = "stereo_inertial" ] || [ "${SLAM_MODE}" = "vio_stereo" ]; then
+    echo "slam-launch: Stereo-Inertial  left=${LEFT_TOPIC} right=${RIGHT_TOPIC} imu=${IMU_TOPIC}  config=${CAMERA_CONFIG_DIR}${CAMERA_CONFIG_NAME}.yaml"
+    "${LIB}/stereo_inertial_node_cpp" --ros-args \
+      -p voc_file_arg:=${VOCABULARY} \
+      -p settings_file_path_arg:=${CAMERA_CONFIG_DIR} \
+      -p settings_name_arg:=${CAMERA_CONFIG_NAME} \
+      -p left_topic:=${LEFT_TOPIC} \
+      -p right_topic:=${RIGHT_TOPIC} \
+      -p imu_topic:=${IMU_TOPIC}
+    exit $?
+fi
+
+# ── Monocular mode (legacy) ──────────────────────────────────────────────────
+MONO_CPP=/opt/orbslam3_ws/install/lib/ros2_orb_slam3/mono_node_cpp
+MONO_DRIVER_PY=/opt/orbslam3_ws/install/lib/ros2_orb_slam3/mono_driver_node.py
+ADAPTER=/usr/local/bin/rosbag-image-adapter.py
+
+echo "slam-launch: mono mode  image=${IMAGE_TOPIC}"
+
+"${MONO_CPP}" --ros-args \
   -p voc_file_arg:=${VOCABULARY} \
   -p settings_file_path_arg:=${CAMERA_CONFIG_DIR} &
 cpp_pid=$!
 
-IMAGE_TOPIC=${IMAGE_TOPIC} CAMERA_CONFIG_NAME=${CAMERA_CONFIG_NAME} /usr/local/bin/rosbag-image-adapter.py &
+python3 "${MONO_DRIVER_PY}" --ros-args \
+  -p settings_name:=${CAMERA_CONFIG_NAME} \
+  -p image_seq:=${CAMERA_CONFIG_NAME} &
+driver_pid=$!
+
+IMAGE_TOPIC=${IMAGE_TOPIC} python3 "${ADAPTER}" &
 adapter_pid=$!
 
-trap 'kill "${cpp_pid}" "${adapter_pid}" 2>/dev/null || true' EXIT
-wait -n "${cpp_pid}" "${adapter_pid}"
+trap 'kill "${cpp_pid}" "${driver_pid}" "${adapter_pid}" 2>/dev/null || true' EXIT
+wait -n "${cpp_pid}" "${driver_pid}" "${adapter_pid}"

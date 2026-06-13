@@ -1,0 +1,70 @@
+%YAML:1.0
+#--------------------------------------------------------------------------------------------
+# Orbbec Femto Bolt / Mega - RGB-D mode (tuned profile)
+#
+# Bolt and Mega share the same sensor hardware/optics (Mega adds an onboard
+# Jetson for HW depth), so this ORB/depth profile serves BOTH. Intrinsics +
+# distortion are PER-UNIT (factory calibration) — regenerate from the bag's
+# /camera/color/camera_info with scripts/make_orbbec_config.py. The values
+# below are the workshop1_slam Bolt unit, kept as a working reference.
+#
+# Tuned against the baked O3D /camera_pose reference (agreement, not GT):
+#   sweep on workshop1_slam: ThDepth=60 (3.0m close/far) won @ ATE-vs-O3D 51mm,
+#   100% coverage, 0 track-losses; cross-validated on kitchen1_slam (43mm).
+#   ThDepth=40 wasted 87% of depth; 80/100 added noisy far depth (worse).
+#   nFeatures>1250 did not help. Distortion barely affects trajectory ATE here
+#   but is applied (camera_info indicates raw/distorted images: P==K, R==I, D!=0).
+#--------------------------------------------------------------------------------------------
+File.version: "1.0"
+Camera.type: "PinHole"
+
+# Color intrinsics (PER-UNIT — fill from /camera/color/camera_info)
+Camera1.fx: 749.820374
+Camera1.fy: 749.719055
+Camera1.cx: 640.758850
+Camera1.cy: 364.850922
+Camera1.k1: 0.07101957
+Camera1.k2: -0.09848151
+Camera1.p1: 0.00043707
+Camera1.p2: 0.00012857
+Camera1.k3: 0.03971413
+
+Camera.width: 1280
+Camera.height: 720
+Camera.fps: 30
+# 0=BGR (decompress_rgbd_node publishes bgr8), 1=RGB
+Camera.RGB: 0
+
+#--------------------------------------------------------------------------------------------
+# RGB-D
+#--------------------------------------------------------------------------------------------
+# Orbbec depth is 16-bit unsigned mm. Depth↔color confirmed aligned (same res,
+# frame_id, K) — feed depth directly, no reprojection.
+RGBD.DepthMapFactor: 1000.0
+Stereo.b: 0.0500
+# Close/far boundary = b*ThDepth = 3.0m. Tuned: covers reliable mid-range Femto
+# depth while excluding noisy far (3-4m) returns that hurt ATE.
+Stereo.ThDepth: 60.0
+
+#--------------------------------------------------------------------------------------------
+# ORB (tuned)
+#--------------------------------------------------------------------------------------------
+ORBextractor.nFeatures: 1250
+ORBextractor.scaleFactor: 1.2
+ORBextractor.nLevels: 8
+ORBextractor.iniThFAST: 20
+ORBextractor.minThFAST: 7
+
+#--------------------------------------------------------------------------------------------
+# Viewer (Pangolin disabled at runtime)
+#--------------------------------------------------------------------------------------------
+Viewer.KeyFrameSize: 0.05
+Viewer.KeyFrameLineWidth: 1.0
+Viewer.GraphLineWidth: 0.9
+Viewer.PointSize: 2.0
+Viewer.CameraSize: 0.08
+Viewer.CameraLineWidth: 3.0
+Viewer.ViewpointX: 0.0
+Viewer.ViewpointY: -0.7
+Viewer.ViewpointZ: -3.5
+Viewer.ViewpointF: 500.0
