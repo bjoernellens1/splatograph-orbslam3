@@ -1,0 +1,70 @@
+%YAML:1.0
+
+#--------------------------------------------------------------------------------------------
+# Orbbec Femto Mega - RGB-D mode
+# Calibrated from /camera/color/camera_info in
+#   orbbec_femto_mega_20260610_135744_0.mcap
+#   K = [748.61, 0, 636.24, 0, 748.41, 345.27, 0, 0, 1]
+#   width=1280, height=720, encoding=rgb8, fps=30
+# Depth: /camera/depth/image_raw  (16-bit unsigned, mm)
+#--------------------------------------------------------------------------------------------
+File.version: "1.0"
+
+Camera.type: "PinHole"
+
+# Color camera intrinsics
+Camera1.fx: 748.61
+Camera1.fy: 748.41
+Camera1.cx: 636.24
+Camera1.cy: 345.27
+
+# distortion parameters (no distortion reported by driver)
+Camera1.k1: 0.0
+Camera1.k2: 0.0
+Camera1.p1: 0.0
+Camera1.p2: 0.0
+
+# Camera resolution
+Camera.width: 1280
+Camera.height: 720
+
+# Camera frames per second
+Camera.fps: 30
+
+# Color order (0: BGR, 1: RGB)
+Camera.RGB: 1
+
+#--------------------------------------------------------------------------------------------
+# RGB-D specific
+#--------------------------------------------------------------------------------------------
+# Depth image units → metres conversion.  Orbbec depth is 16-bit unsigned in mm.
+RGBD.DepthMapFactor: 1000.0
+
+# ORB-SLAM3 requires Stereo.b (virtual baseline, metres) even in RGBD mode.
+# ThDepth = Stereo.ThDepth * Stereo.b * fx  (close/far point boundary).
+# Use a typical RGB-D camera baseline; 0.05m gives reasonable close/far split.
+Stereo.b: 0.05
+Stereo.ThDepth: 40.0
+
+#--------------------------------------------------------------------------------------------
+# ORB Parameters
+#--------------------------------------------------------------------------------------------
+ORBextractor.nFeatures: 1250
+ORBextractor.scaleFactor: 1.2
+ORBextractor.nLevels: 8
+ORBextractor.iniThFAST: 20
+ORBextractor.minThFAST: 7
+
+#--------------------------------------------------------------------------------------------
+# Viewer Parameters (Pangolin disabled at runtime; kept for reference)
+#--------------------------------------------------------------------------------------------
+Viewer.KeyFrameSize: 0.05
+Viewer.KeyFrameLineWidth: 1.0
+Viewer.GraphLineWidth: 0.9
+Viewer.PointSize: 2.0
+Viewer.CameraSize: 0.08
+Viewer.CameraLineWidth: 3.0
+Viewer.ViewpointX: 0.0
+Viewer.ViewpointY: -0.7
+Viewer.ViewpointZ: -3.5
+Viewer.ViewpointF: 500.0
