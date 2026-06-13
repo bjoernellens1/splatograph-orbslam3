@@ -59,6 +59,27 @@ Per-stage `[timing]`:
 - Eval 0.2 s, decompress 30 fps — negligible.
 - **Net: runs are ~2× faster** (real-time replay + 15 s→0.3 s init).
 
+## Multi-mode support (image `:jazzy-multimode`)
+Added three ORB-SLAM3 ROS2 nodes (via `patches/apply_patch.py`, same mechanism
+as the RGB-D node): `rgbd_inertial_node_cpp` (Orbbec VIO, `IMU_RGBD`),
+`stereo_node_cpp` (`STEREO`), `stereo_inertial_node_cpp` (`IMU_STEREO`). All five
+nodes compile/install; `slam-launch` gains `rgbd_inertial`, `stereo`,
+`stereo_inertial` modes.
+
+- **Orbbec RGBD-Inertial (VIO)** — node runs and tracks **real-time** (30 pose/s,
+  99.8 % coverage) on workshop1_slam, so the mode works. But with **nominal IMU
+  noise + tf-derived Tbc it is untuned**: ATE-vs-O3D **1.10 m** and RPE 98 mm vs
+  RGB-D-only's 51 mm / 5 mm — the IMU currently *hurts*. On these well-textured
+  RGB-D scenes RGB-D-only is already excellent; VIO needs IMU calibration (Allan
+  variance for the noise params, verify `IMU.T_b_c1`, tune VI-init excitation)
+  before it helps. Answer to "can we do Orbbec VIO": **yes (RGBD-Inertial), and
+  it runs — but it must be IMU-calibrated to beat RGB-D-only.**
+- **RealSense D435i stereo / stereo-inertial** — nodes launch and parse the
+  template configs (stereo loads both cameras; stereo-inertial also loads the IMU
+  calibration). Full tracking validation deferred: no D435i IR-stereo + IMU + GT
+  dataset (QueensCAMP is D435, no IMU). Record IR with the **emitter OFF** and
+  fill per-unit calibration before use.
+
 ## Reproduce
 ```
 podman run --rm --security-opt label=disable -e ROS_DOMAIN_ID=$((RANDOM%233)) \
