@@ -25,6 +25,9 @@ POSE_BAG="${OUTDIR}/${LABEL}_poses"
 mkdir -p "$OUTDIR"; rm -rf "$POSE_BAG"
 
 echo "[run] LABEL=$LABEL CONFIG=$CONFIG RATE=$RATE DOMAIN=$ROS_DOMAIN_ID"
+now() { date +%s.%N; }
+T_start=$(now)
+INIT_TIMEOUT="${INIT_WAIT:-30}"
 
 # 1. decompress compressed color/depth -> raw Image for the rgbd node
 python3 /scripts/decompress_rgbd_node.py --ros-args \
@@ -35,7 +38,8 @@ python3 /scripts/decompress_rgbd_node.py --ros-args \
   -p color_encoding:=bgr8 > "${OUTDIR}/${LABEL}.decompress.log" 2>&1 &
 DPID=$!
 
-# 2. ORB-SLAM3 RGB-D node (loads vocab; give it time)
+# 2. ORB-SLAM3 RGB-D node (loads vocab). Wait for the node's "ready" log line
+#    (measures real init/vocab-load time) instead of a fixed conservative sleep.
 "$RGBD" --ros-args \
   -p voc_file_arg:="$VOC" \
   -p settings_file_path_arg:="$CDIR" \
@@ -43,15 +47,22 @@ DPID=$!
   -p color_topic:=/camera/color/image_raw \
   -p depth_topic:=/camera/depth/image_raw > "${OUTDIR}/${LABEL}.slam.log" 2>&1 &
 SPID=$!
-sleep 15
+SLAM_LOG="${OUTDIR}/${LABEL}.slam.log"
+for i in $(seq 1 "$((INIT_TIMEOUT*4))"); do
+  grep -qiE "node ready|ready to|Tracking started|Loading.*done" "$SLAM_LOG" 2>/dev/null && break
+  sleep 0.25
+done
+T_ready=$(now)
 
 # 3. record estimate + reference
 ros2 bag record -s mcap -o "$POSE_BAG" /slam/pose /camera_pose > "${OUTDIR}/${LABEL}.record.log" 2>&1 &
 RPID=$!
-sleep 3
+sleep 2
 
 # 4. play the bag (blocks until end)
+T_play0=$(now)
 ros2 bag play "$BAG" -r "$RATE" $PLAY_EXTRA > "${OUTDIR}/${LABEL}.play.log" 2>&1
+T_play1=$(now)
 sleep 4
 
 # 5. shut down recorder + slam + decompress
@@ -61,4 +72,18 @@ kill "$SPID" "$DPID" "$RPID" 2>/dev/null || true
 wait 2>/dev/null || true
 
 # 6. evaluate trajectory vs O3D reference
+T_eval0=$(now)
 python3 /scripts/eval_traj.py "$POSE_BAG" --label "$LABEL" --json "${OUTDIR}/${LABEL}.eval.json"
+T_eval1=$(now)
+
+# 7. timing breakdown — find real blockers
+DECOMP=$(grep -aoE "color=[0-9]+ depth=[0-9]+" "${OUTDIR}/${LABEL}.decompress.log" | tail -1)
+VOCLINE=$(grep -aiE "vocabulary loaded|loading orb voc" "$SLAM_LOG" | tail -1)
+N_EST=$(grep -aoE '"n_est": [0-9]+' "${OUTDIR}/${LABEL}.eval.json" 2>/dev/null | grep -oE "[0-9]+" | head -1)
+awk -v a="$T_start" -v b="$T_ready" -v c="$T_play0" -v d="$T_play1" -v e="$T_eval0" -v f="$T_eval1" \
+    -v n="${N_EST:-0}" -v lbl="$LABEL" 'BEGIN{
+  init=b-a; play=d-c; ev=f-e; fps=(play>0&&n>0)?n/play:0;
+  printf "[timing] %s init=%.1fs play=%.1fs(%d poses, %.1f pose/s) eval=%.1fs\n", lbl, init, play, n, fps, ev
+}'
+[ -n "$DECOMP" ] && echo "[timing] $LABEL decompress: $DECOMP"
+[ -n "$VOCLINE" ] && echo "[timing] $LABEL voc: $VOCLINE"
