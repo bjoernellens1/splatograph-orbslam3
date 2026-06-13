@@ -22,7 +22,9 @@ export PYTHONPATH="/splatograph:${PYTHONPATH:-}"
 VOC=/opt/orbslam3_ws/src/ros2_orb_slam3/orb_slam3/Vocabulary/ORBvoc.txt.bin
 CDIR="$(cd "$(dirname "$CONFIG")" && pwd)/"
 CNAME="$(basename "$CONFIG" .yaml)"
-RGBD=/opt/orbslam3_ws/install/lib/ros2_orb_slam3/rgbd_node_cpp
+# SLAM_NODE: rgbd_node_cpp (default) or rgbd_inertial_node_cpp (Orbbec VIO).
+# EXTRA_PARAMS: e.g. "-p imu_topic:=/camera/imu" for the inertial node.
+RGBD=/opt/orbslam3_ws/install/lib/ros2_orb_slam3/${SLAM_NODE:-rgbd_node_cpp}
 POSE_BAG="${OUTDIR}/${LABEL}_poses"
 mkdir -p "$OUTDIR"; rm -rf "$POSE_BAG"
 
@@ -47,7 +49,7 @@ DPID=$!
   -p settings_file_path_arg:="$CDIR" \
   -p settings_name_arg:="$CNAME" \
   -p color_topic:=/camera/color/image_raw \
-  -p depth_topic:=/camera/depth/image_raw > "${OUTDIR}/${LABEL}.slam.log" 2>&1 &
+  -p depth_topic:=/camera/depth/image_raw ${EXTRA_PARAMS:-} > "${OUTDIR}/${LABEL}.slam.log" 2>&1 &
 SPID=$!
 SLAM_LOG="${OUTDIR}/${LABEL}.slam.log"
 for i in $(seq 1 "$((INIT_TIMEOUT*4))"); do

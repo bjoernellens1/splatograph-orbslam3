@@ -1,0 +1,78 @@
+%YAML:1.0
+#--------------------------------------------------------------------------------------------
+# Orbbec Femto Mega - RGB-D-Inertial (VIO; shares Bolt profile)
+#
+# Orbbec Femto is mono colour + depth + IMU (NOT stereo), so VIO = ORB-SLAM3
+# RGBD-Inertial (System::IMU_RGBD). Extends the tuned RGB-D profile
+# (OrbbecFemtoBolt_RGBD.yaml) with IMU noise/bias + the camera->IMU extrinsic.
+#
+# Intrinsics + distortion are PER-UNIT — regenerate with make_orbbec_config.py.
+# IMU.T_b_c1 below was derived from the workshop1_slam /tf_static tree
+# (camera_color_optical_frame -> camera_accel_gyro_optical_frame). IMU noise
+# values are nominal MEMS starting points — refine with an Allan-variance
+# calibration of the actual unit before trusting VIO accuracy.
+#--------------------------------------------------------------------------------------------
+File.version: "1.0"
+Camera.type: "PinHole"
+
+# Color intrinsics (PER-UNIT — fill from /camera/color/camera_info)
+Camera1.fx: 749.820374
+Camera1.fy: 749.719055
+Camera1.cx: 640.758850
+Camera1.cy: 364.850922
+Camera1.k1: 0.07101957
+Camera1.k2: -0.09848151
+Camera1.p1: 0.00043707
+Camera1.p2: 0.00012857
+Camera1.k3: 0.03971413
+
+Camera.width: 1280
+Camera.height: 720
+Camera.fps: 30
+Camera.RGB: 0
+
+# RGB-D (tuned; see OrbbecFemtoBolt_RGBD.yaml)
+RGBD.DepthMapFactor: 1000.0
+Stereo.b: 0.0500
+Stereo.ThDepth: 60.0
+
+#--------------------------------------------------------------------------------------------
+# IMU
+#--------------------------------------------------------------------------------------------
+# Transformation from camera (color optical) to body/IMU frame (T_body_camera),
+# from /tf_static color_optical -> accel/gyro optical frame.
+IMU.T_b_c1: !!opencv-matrix
+   rows: 4
+   cols: 4
+   dt: f
+   data: [-0.002907,  0.000757, -0.999995,  0.056299,
+          -0.999994,  0.002033,  0.002909, -0.069967,
+           0.002035,  0.999998,  0.000751, -0.003326,
+           0.0,       0.0,       0.0,       1.0      ]
+
+# Nominal MEMS noise (continuous-time). Refine via Allan variance.
+IMU.NoiseGyro: 1.7e-4     # rad/s/sqrt(Hz)
+IMU.NoiseAcc:  2.0e-3     # m/s^2/sqrt(Hz)
+IMU.GyroWalk:  1.9e-5     # rad/s^2/sqrt(Hz)
+IMU.AccWalk:   3.0e-3     # m/s^3/sqrt(Hz)
+IMU.Frequency: 200.0      # measured ~222 Hz on /camera/imu
+
+#--------------------------------------------------------------------------------------------
+# ORB (tuned)
+#--------------------------------------------------------------------------------------------
+ORBextractor.nFeatures: 1250
+ORBextractor.scaleFactor: 1.2
+ORBextractor.nLevels: 8
+ORBextractor.iniThFAST: 20
+ORBextractor.minThFAST: 7
+
+Viewer.KeyFrameSize: 0.05
+Viewer.KeyFrameLineWidth: 1.0
+Viewer.GraphLineWidth: 0.9
+Viewer.PointSize: 2.0
+Viewer.CameraSize: 0.08
+Viewer.CameraLineWidth: 3.0
+Viewer.ViewpointX: 0.0
+Viewer.ViewpointY: -0.7
+Viewer.ViewpointZ: -3.5
+Viewer.ViewpointF: 500.0
