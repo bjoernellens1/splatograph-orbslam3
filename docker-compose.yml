@@ -1,8 +1,9 @@
 services:
   slam:
-    image: ghcr.io/bjoernellens1/splatograph-orbslam3:jazzy
+    image: ${SLAM_IMAGE:-ghcr.io/bjoernellens1/splatograph-orbslam3:jazzy-orbbec-v3}
     build:
       context: .
+    entrypoint: ["/ros_entrypoint.sh"]
     network_mode: host
     ipc: host
     environment:
@@ -10,10 +11,16 @@ services:
       ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
       RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
       RCUTILS_COLORIZED_OUTPUT: '1'
+      SLAM_MODE: ${SLAM_MODE:-rgbd}
+      IMAGE_TOPIC: ${IMAGE_TOPIC:-/camera/color/image_raw}
+      DEPTH_TOPIC: ${DEPTH_TOPIC:-/camera/depth/image_raw}
+      CAMERA_CONFIG_NAME: ${CAMERA_CONFIG_NAME:-OrbbecFemtoMega_RGBD}
+      CAMERA_CONFIG_DIR: ${CAMERA_CONFIG_DIR:-/config/}
+      CAMERA_CONFIG_PATH: ${CAMERA_CONFIG_PATH:-}
     volumes:
-      - ./config:/config:ro
-      - ./bags:/bags:ro
-      - ./output:/output
+      - ./config:/config:ro,z
+      - ${BAGS_HOST_PATH:-/mnt/cps_persistent1_shared/datasets}:/bags:ro,z
+      - ./output:/output,z
     command: ["slam-launch"]
 
   bag:
@@ -26,5 +33,5 @@ services:
       ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
       RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
     volumes:
-      - ./bags:/bags:ro
+      - ${BAGS_HOST_PATH:-/mnt/cps_persistent1_shared/datasets}:/bags:ro
     command: ["bash", "-lc", "source /opt/ros/jazzy/setup.bash && ros2 bag play ${BAG_PATH:-/bags/input} --clock"]
