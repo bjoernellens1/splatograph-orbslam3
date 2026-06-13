@@ -39,7 +39,7 @@ python3 /scripts/decompress_rgbd_node.py --ros-args \
   -p depth_in:=/camera/depth/image_raw/compressed \
   -p color_out:=/camera/color/image_raw \
   -p depth_out:=/camera/depth/image_raw \
-  -p color_encoding:=bgr8 > "${OUTDIR}/${LABEL}.decompress.log" 2>&1 &
+  -p color_encoding:=bgr8 -p sync:=${DECOMP_SYNC:-true} > "${OUTDIR}/${LABEL}.decompress.log" 2>&1 &
 DPID=$!
 
 # 2. ORB-SLAM3 RGB-D node (loads vocab). Wait for the node's "ready" log line
