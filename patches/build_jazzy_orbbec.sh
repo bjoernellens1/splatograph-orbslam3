@@ -13,7 +13,7 @@
 set -euo pipefail
 
 BASE_TAG="${1:-jazzy}"
-NEW_TAG="${2:-jazzy-orbbec-v3}"
+NEW_TAG="${2:-jazzy-multimode}"
 IMAGE="ghcr.io/bjoernellens1/splatograph-orbslam3:${BASE_TAG}"
 NEW_IMAGE="ghcr.io/bjoernellens1/splatograph-orbslam3:${NEW_TAG}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -87,8 +87,10 @@ podman exec "${TMP_CID}" bash -c "set -e
 podman cp "${SCRIPT_DIR}/../scripts/slam-launch" "${TMP_CID}:/usr/local/bin/slam-launch"
 podman exec "${TMP_CID}" chmod +x /usr/local/bin/slam-launch
 podman exec "${TMP_CID}" mkdir -p /config
-podman cp "${SCRIPT_DIR}/../config/OrbbecFemtoMega.yaml" "${TMP_CID}:/config/OrbbecFemtoMega.yaml"
-podman cp "${SCRIPT_DIR}/../config/OrbbecFemtoMega_RGBD.yaml" "${TMP_CID}:/config/OrbbecFemtoMega_RGBD.yaml"
+# Copy all camera configs (Orbbec RGB-D + Inertial, RealSense stereo/VIO, ...)
+for _cfg in "${SCRIPT_DIR}/../config/"*.yaml; do
+  podman cp "${_cfg}" "${TMP_CID}:/config/$(basename "${_cfg}")"
+done
 # Make sure the COLCON_PREFIX_PATH includes orbslam3_ws/install
 podman exec "${TMP_CID}" bash -c "grep -q orbslam3_ws /opt/ros/jazzy/setup.bash || echo 'source /opt/orbslam3_ws/install/setup.bash' >> /opt/ros/jazzy/setup.bash"
 podman stop "${TMP_CID}" >/dev/null

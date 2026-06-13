@@ -163,6 +163,289 @@ int main(int argc, char** argv)
 """
 
 
+# Shared pose-publish + IMU-buffer helpers reused by the inertial/stereo nodes.
+_POSE_PUB = """\
+    void publishPose(const Sophus::SE3f& Tcw, const builtin_interfaces::msg::Time& stamp)
+    {
+        Sophus::SE3f Twc = Tcw.inverse();
+        Eigen::Vector3f tr = Twc.translation();
+        Eigen::Quaternionf q = Twc.unit_quaternion();
+        geometry_msgs::msg::PoseStamped msg;
+        msg.header.stamp = stamp;
+        msg.header.frame_id = "map";
+        msg.pose.position.x = static_cast<double>(tr.x());
+        msg.pose.position.y = static_cast<double>(tr.y());
+        msg.pose.position.z = static_cast<double>(tr.z());
+        msg.pose.orientation.x = static_cast<double>(q.x());
+        msg.pose.orientation.y = static_cast<double>(q.y());
+        msg.pose.orientation.z = static_cast<double>(q.z());
+        msg.pose.orientation.w = static_cast<double>(q.w());
+        pose_pub_->publish(msg);
+    }
+"""
+
+# ── Orbbec Femto VIO: RGB-D + IMU (System::IMU_RGBD) ────────────────────────
+RGBD_INERTIAL_NODE_CPP = """\
+/* RGB-D-Inertial ORB-SLAM3 node (Orbbec Femto VIO: mono colour + depth + IMU).
+ * Params: voc_file_arg, settings_file_path_arg, settings_name_arg,
+ *         color_topic, depth_topic, imu_topic (default /camera/imu).
+ * Publishes /slam/pose (Twc, frame_id="map"). Config needs IMU.* + Tbc. */
+#include <iostream>
+#include <queue>
+#include <mutex>
+#include "rclcpp/rclcpp.hpp"
+#include "sensor_msgs/msg/image.hpp"
+#include "sensor_msgs/msg/imu.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
+#include "message_filters/subscriber.h"
+#include "message_filters/synchronizer.h"
+#include "message_filters/sync_policies/approximate_time.h"
+#include <cv_bridge/cv_bridge.hpp>
+#include <opencv2/core/core.hpp>
+#include <Eigen/Dense>
+#include "System.h"
+#include "ImuTypes.h"
+
+class RGBDInertialNode : public rclcpp::Node
+{
+    using SyncPolicy = message_filters::sync_policies::ApproximateTime<
+        sensor_msgs::msg::Image, sensor_msgs::msg::Image>;
+public:
+    RGBDInertialNode() : Node("rgbd_inertial_node_cpp")
+    {
+        this->declare_parameter("voc_file_arg", "");
+        this->declare_parameter("settings_file_path_arg", "");
+        this->declare_parameter("settings_name_arg", "");
+        this->declare_parameter("color_topic", "/camera/color/image_raw");
+        this->declare_parameter("depth_topic", "/camera/depth/image_raw");
+        this->declare_parameter("imu_topic", "/camera/imu");
+        auto voc   = this->get_parameter("voc_file_arg").as_string();
+        auto sdir  = this->get_parameter("settings_file_path_arg").as_string();
+        auto sname = this->get_parameter("settings_name_arg").as_string();
+        auto ctopic= this->get_parameter("color_topic").as_string();
+        auto dtopic= this->get_parameter("depth_topic").as_string();
+        auto itopic= this->get_parameter("imu_topic").as_string();
+        std::string cfg = sdir + sname + ".yaml";
+        RCLCPP_INFO(this->get_logger(), "RGBD-Inertial vocab=%s cfg=%s\\ncolor=%s depth=%s imu=%s",
+                    voc.c_str(), cfg.c_str(), ctopic.c_str(), dtopic.c_str(), itopic.c_str());
+        pSLAM_ = new ORB_SLAM3::System(voc, cfg, ORB_SLAM3::System::IMU_RGBD, false);
+        pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/slam/pose", 10);
+        imu_sub_ = this->create_subscription<sensor_msgs::msg::Imu>(
+            itopic, rclcpp::SensorDataQoS(),
+            std::bind(&RGBDInertialNode::GrabImu, this, std::placeholders::_1));
+        color_sub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::Image>>(this, ctopic);
+        depth_sub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::Image>>(this, dtopic);
+        sync_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(
+            SyncPolicy(10), *color_sub_, *depth_sub_);
+        sync_->registerCallback(&RGBDInertialNode::GrabRGBD, this);
+        RCLCPP_INFO(this->get_logger(), "RGBD-Inertial ORB-SLAM3 node ready");
+    }
+    ~RGBDInertialNode() { if (pSLAM_) { pSLAM_->Shutdown(); delete pSLAM_; } }
+private:
+    void GrabImu(const sensor_msgs::msg::Imu::SharedPtr msg)
+    { std::lock_guard<std::mutex> lk(imu_mtx_); imu_buf_.push(msg); }
+
+    void GrabRGBD(const sensor_msgs::msg::Image::SharedPtr msgRGB,
+                  const sensor_msgs::msg::Image::SharedPtr msgD)
+    {
+        cv_bridge::CvImageConstPtr cv_rgb, cv_depth;
+        try { cv_rgb = cv_bridge::toCvShare(msgRGB); }
+        catch (cv_bridge::Exception& e) { RCLCPP_ERROR(this->get_logger(), "rgb: %s", e.what()); return; }
+        try { cv_depth = cv_bridge::toCvShare(msgD); }
+        catch (cv_bridge::Exception& e) { RCLCPP_ERROR(this->get_logger(), "depth: %s", e.what()); return; }
+        double t = msgRGB->header.stamp.sec + msgRGB->header.stamp.nanosec * 1e-9;
+        std::vector<ORB_SLAM3::IMU::Point> vImu;
+        {
+            std::lock_guard<std::mutex> lk(imu_mtx_);
+            while (!imu_buf_.empty()) {
+                auto& m = imu_buf_.front();
+                double ti = m->header.stamp.sec + m->header.stamp.nanosec * 1e-9;
+                if (ti > t) break;
+                vImu.emplace_back(m->linear_acceleration.x, m->linear_acceleration.y, m->linear_acceleration.z,
+                                  m->angular_velocity.x, m->angular_velocity.y, m->angular_velocity.z, ti);
+                imu_buf_.pop();
+            }
+        }
+        Sophus::SE3f Tcw = pSLAM_->TrackRGBD(cv_rgb->image, cv_depth->image, t, vImu);
+        publishPose(Tcw, msgRGB->header.stamp);
+    }
+__POSE_PUB__
+    ORB_SLAM3::System* pSLAM_ = nullptr;
+    rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
+    rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
+    std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::Image>> color_sub_, depth_sub_;
+    std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;
+    std::queue<sensor_msgs::msg::Imu::SharedPtr> imu_buf_;
+    std::mutex imu_mtx_;
+};
+int main(int argc, char** argv)
+{ rclcpp::init(argc, argv); rclcpp::spin(std::make_shared<RGBDInertialNode>()); rclcpp::shutdown(); return 0; }
+""".replace("__POSE_PUB__", _POSE_PUB)
+
+# ── RealSense D435i stereo (System::STEREO; left/right IR) ──────────────────
+STEREO_NODE_CPP = """\
+/* Stereo ORB-SLAM3 node (RealSense D435i: left/right IR; emitter OFF).
+ * Params: voc/settings*, left_topic (/camera/infra1/image_rect_raw),
+ *         right_topic (/camera/infra2/image_rect_raw). Publishes /slam/pose. */
+#include <iostream>
+#include "rclcpp/rclcpp.hpp"
+#include "sensor_msgs/msg/image.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
+#include "message_filters/subscriber.h"
+#include "message_filters/synchronizer.h"
+#include "message_filters/sync_policies/approximate_time.h"
+#include <cv_bridge/cv_bridge.hpp>
+#include <opencv2/core/core.hpp>
+#include <Eigen/Dense>
+#include "System.h"
+
+class StereoNode : public rclcpp::Node
+{
+    using SyncPolicy = message_filters::sync_policies::ApproximateTime<
+        sensor_msgs::msg::Image, sensor_msgs::msg::Image>;
+public:
+    StereoNode() : Node("stereo_node_cpp")
+    {
+        this->declare_parameter("voc_file_arg", "");
+        this->declare_parameter("settings_file_path_arg", "");
+        this->declare_parameter("settings_name_arg", "");
+        this->declare_parameter("left_topic", "/camera/infra1/image_rect_raw");
+        this->declare_parameter("right_topic", "/camera/infra2/image_rect_raw");
+        auto voc   = this->get_parameter("voc_file_arg").as_string();
+        auto sdir  = this->get_parameter("settings_file_path_arg").as_string();
+        auto sname = this->get_parameter("settings_name_arg").as_string();
+        auto ltopic= this->get_parameter("left_topic").as_string();
+        auto rtopic= this->get_parameter("right_topic").as_string();
+        std::string cfg = sdir + sname + ".yaml";
+        RCLCPP_INFO(this->get_logger(), "Stereo vocab=%s cfg=%s\\nleft=%s right=%s",
+                    voc.c_str(), cfg.c_str(), ltopic.c_str(), rtopic.c_str());
+        pSLAM_ = new ORB_SLAM3::System(voc, cfg, ORB_SLAM3::System::STEREO, false);
+        pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/slam/pose", 10);
+        left_sub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::Image>>(this, ltopic);
+        right_sub_= std::make_shared<message_filters::Subscriber<sensor_msgs::msg::Image>>(this, rtopic);
+        sync_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(
+            SyncPolicy(10), *left_sub_, *right_sub_);
+        sync_->registerCallback(&StereoNode::GrabStereo, this);
+        RCLCPP_INFO(this->get_logger(), "Stereo ORB-SLAM3 node ready");
+    }
+    ~StereoNode() { if (pSLAM_) { pSLAM_->Shutdown(); delete pSLAM_; } }
+private:
+    void GrabStereo(const sensor_msgs::msg::Image::SharedPtr msgL,
+                    const sensor_msgs::msg::Image::SharedPtr msgR)
+    {
+        cv_bridge::CvImageConstPtr cl, cr;
+        try { cl = cv_bridge::toCvShare(msgL); } catch (cv_bridge::Exception& e) { RCLCPP_ERROR(this->get_logger(), "L: %s", e.what()); return; }
+        try { cr = cv_bridge::toCvShare(msgR); } catch (cv_bridge::Exception& e) { RCLCPP_ERROR(this->get_logger(), "R: %s", e.what()); return; }
+        double t = msgL->header.stamp.sec + msgL->header.stamp.nanosec * 1e-9;
+        Sophus::SE3f Tcw = pSLAM_->TrackStereo(cl->image, cr->image, t);
+        publishPose(Tcw, msgL->header.stamp);
+    }
+__POSE_PUB__
+    ORB_SLAM3::System* pSLAM_ = nullptr;
+    rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
+    std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::Image>> left_sub_, right_sub_;
+    std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;
+};
+int main(int argc, char** argv)
+{ rclcpp::init(argc, argv); rclcpp::spin(std::make_shared<StereoNode>()); rclcpp::shutdown(); return 0; }
+""".replace("__POSE_PUB__", _POSE_PUB)
+
+# ── RealSense D435i VIO: stereo + IMU (System::IMU_STEREO) ──────────────────
+STEREO_INERTIAL_NODE_CPP = """\
+/* Stereo-Inertial ORB-SLAM3 node (RealSense D435i VIO: left/right IR + IMU).
+ * Params: voc/settings*, left_topic, right_topic, imu_topic (/camera/imu).
+ * Publishes /slam/pose. Config needs IMU.* + Tbc. */
+#include <iostream>
+#include <queue>
+#include <mutex>
+#include "rclcpp/rclcpp.hpp"
+#include "sensor_msgs/msg/image.hpp"
+#include "sensor_msgs/msg/imu.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
+#include "message_filters/subscriber.h"
+#include "message_filters/synchronizer.h"
+#include "message_filters/sync_policies/approximate_time.h"
+#include <cv_bridge/cv_bridge.hpp>
+#include <opencv2/core/core.hpp>
+#include <Eigen/Dense>
+#include "System.h"
+#include "ImuTypes.h"
+
+class StereoInertialNode : public rclcpp::Node
+{
+    using SyncPolicy = message_filters::sync_policies::ApproximateTime<
+        sensor_msgs::msg::Image, sensor_msgs::msg::Image>;
+public:
+    StereoInertialNode() : Node("stereo_inertial_node_cpp")
+    {
+        this->declare_parameter("voc_file_arg", "");
+        this->declare_parameter("settings_file_path_arg", "");
+        this->declare_parameter("settings_name_arg", "");
+        this->declare_parameter("left_topic", "/camera/infra1/image_rect_raw");
+        this->declare_parameter("right_topic", "/camera/infra2/image_rect_raw");
+        this->declare_parameter("imu_topic", "/camera/imu");
+        auto voc   = this->get_parameter("voc_file_arg").as_string();
+        auto sdir  = this->get_parameter("settings_file_path_arg").as_string();
+        auto sname = this->get_parameter("settings_name_arg").as_string();
+        auto ltopic= this->get_parameter("left_topic").as_string();
+        auto rtopic= this->get_parameter("right_topic").as_string();
+        auto itopic= this->get_parameter("imu_topic").as_string();
+        std::string cfg = sdir + sname + ".yaml";
+        RCLCPP_INFO(this->get_logger(), "Stereo-Inertial vocab=%s cfg=%s\\nleft=%s right=%s imu=%s",
+                    voc.c_str(), cfg.c_str(), ltopic.c_str(), rtopic.c_str(), itopic.c_str());
+        pSLAM_ = new ORB_SLAM3::System(voc, cfg, ORB_SLAM3::System::IMU_STEREO, false);
+        pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/slam/pose", 10);
+        imu_sub_ = this->create_subscription<sensor_msgs::msg::Imu>(
+            itopic, rclcpp::SensorDataQoS(),
+            std::bind(&StereoInertialNode::GrabImu, this, std::placeholders::_1));
+        left_sub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::Image>>(this, ltopic);
+        right_sub_= std::make_shared<message_filters::Subscriber<sensor_msgs::msg::Image>>(this, rtopic);
+        sync_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(
+            SyncPolicy(10), *left_sub_, *right_sub_);
+        sync_->registerCallback(&StereoInertialNode::GrabStereo, this);
+        RCLCPP_INFO(this->get_logger(), "Stereo-Inertial ORB-SLAM3 node ready");
+    }
+    ~StereoInertialNode() { if (pSLAM_) { pSLAM_->Shutdown(); delete pSLAM_; } }
+private:
+    void GrabImu(const sensor_msgs::msg::Imu::SharedPtr msg)
+    { std::lock_guard<std::mutex> lk(imu_mtx_); imu_buf_.push(msg); }
+
+    void GrabStereo(const sensor_msgs::msg::Image::SharedPtr msgL,
+                    const sensor_msgs::msg::Image::SharedPtr msgR)
+    {
+        cv_bridge::CvImageConstPtr cl, cr;
+        try { cl = cv_bridge::toCvShare(msgL); } catch (cv_bridge::Exception& e) { RCLCPP_ERROR(this->get_logger(), "L: %s", e.what()); return; }
+        try { cr = cv_bridge::toCvShare(msgR); } catch (cv_bridge::Exception& e) { RCLCPP_ERROR(this->get_logger(), "R: %s", e.what()); return; }
+        double t = msgL->header.stamp.sec + msgL->header.stamp.nanosec * 1e-9;
+        std::vector<ORB_SLAM3::IMU::Point> vImu;
+        {
+            std::lock_guard<std::mutex> lk(imu_mtx_);
+            while (!imu_buf_.empty()) {
+                auto& m = imu_buf_.front();
+                double ti = m->header.stamp.sec + m->header.stamp.nanosec * 1e-9;
+                if (ti > t) break;
+                vImu.emplace_back(m->linear_acceleration.x, m->linear_acceleration.y, m->linear_acceleration.z,
+                                  m->angular_velocity.x, m->angular_velocity.y, m->angular_velocity.z, ti);
+                imu_buf_.pop();
+            }
+        }
+        Sophus::SE3f Tcw = pSLAM_->TrackStereo(cl->image, cr->image, t, vImu);
+        publishPose(Tcw, msgL->header.stamp);
+    }
+__POSE_PUB__
+    ORB_SLAM3::System* pSLAM_ = nullptr;
+    rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
+    rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
+    std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::Image>> left_sub_, right_sub_;
+    std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;
+    std::queue<sensor_msgs::msg::Imu::SharedPtr> imu_buf_;
+    std::mutex imu_mtx_;
+};
+int main(int argc, char** argv)
+{ rclcpp::init(argc, argv); rclcpp::spin(std::make_shared<StereoInertialNode>()); rclcpp::shutdown(); return 0; }
+""".replace("__POSE_PUB__", _POSE_PUB)
+
+
 def main() -> None:
     if len(sys.argv) != 3:
         raise SystemExit(__doc__)
@@ -260,19 +543,34 @@ def main() -> None:
             # Add rgbd_node_cpp executable after mono_node_cpp
             (
                 "target_link_libraries(mono_node_cpp PUBLIC orb_slam3_lib) # Link a node with the internal shared library",
-                "target_link_libraries(mono_node_cpp PUBLIC orb_slam3_lib) # Link a node with the internal shared library\n\nadd_executable(rgbd_node_cpp\n  src/rgbd_example.cpp\n)\nament_target_dependencies(rgbd_node_cpp\n  PUBLIC ${THIS_PACKAGE_INCLUDE_DEPENDS}\n)\ntarget_link_libraries(rgbd_node_cpp PUBLIC orb_slam3_lib)",
+                "target_link_libraries(mono_node_cpp PUBLIC orb_slam3_lib) # Link a node with the internal shared library"
+                + "".join(
+                    f"\n\nadd_executable({node}\n  src/{src}\n)\n"
+                    f"ament_target_dependencies({node}\n  PUBLIC ${{THIS_PACKAGE_INCLUDE_DEPENDS}}\n)\n"
+                    f"target_link_libraries({node} PUBLIC orb_slam3_lib)"
+                    for node, src in (
+                        ("rgbd_node_cpp", "rgbd_example.cpp"),
+                        ("rgbd_inertial_node_cpp", "rgbd_inertial_example.cpp"),
+                        ("stereo_node_cpp", "stereo_example.cpp"),
+                        ("stereo_inertial_node_cpp", "stereo_inertial_example.cpp"),
+                    )
+                ),
             ),
-            # Add rgbd_node_cpp to install(TARGETS...)
+            # Add all new node executables to install(TARGETS...)
             (
                 "install(TARGETS mono_node_cpp orb_slam3_lib DBoW2 g2o",
-                "install(TARGETS mono_node_cpp rgbd_node_cpp orb_slam3_lib DBoW2 g2o",
+                "install(TARGETS mono_node_cpp rgbd_node_cpp rgbd_inertial_node_cpp "
+                "stereo_node_cpp stereo_inertial_node_cpp orb_slam3_lib DBoW2 g2o",
             ),
         ],
         "CMakeLists.txt",
     )
 
-    # Write the new RGB-D ROS2 node source file
+    # Write the new node source files (RGB-D + Orbbec VIO + RealSense stereo/VIO)
     write_file(src / "src" / "rgbd_example.cpp", RGBD_NODE_CPP, "rgbd_example.cpp")
+    write_file(src / "src" / "rgbd_inertial_example.cpp", RGBD_INERTIAL_NODE_CPP, "rgbd_inertial_example.cpp")
+    write_file(src / "src" / "stereo_example.cpp", STEREO_NODE_CPP, "stereo_example.cpp")
+    write_file(src / "src" / "stereo_inertial_example.cpp", STEREO_INERTIAL_NODE_CPP, "stereo_inertial_example.cpp")
 
     print("[rebuild] patches applied; deferring colcon build to caller")
 
