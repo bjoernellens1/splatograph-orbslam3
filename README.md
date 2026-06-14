@@ -38,6 +38,26 @@ Default input/output topics are documented in `config/default.yaml`. Provider ou
 - Platform: `linux/amd64`
 - Runtime policy: CPU/AMD-compatible, no NVIDIA runtime dependency
 
+## Ecosystem
+
+This is part of the **Splatograph** streaming 3DGS stack. See
+[bjoernellens1/splatograph/docs/ECOSYSTEM_CONTRIBUTIONS.md](https://github.com/bjoernellens1/splatograph/blob/main/docs/ECOSYSTEM_CONTRIBUTIONS.md)
+for the full dependency graph, per-repo contributions, and AMD/ROCm
+(gfx1151) + NVIDIA/CUDA port notes.
+
+## References
+
+- **ORB-SLAM3** — C. Campos, R. Elvira, J. J. G. Rodríguez, J. M. M. Montiel,
+  J. D. Tardós, *"ORB-SLAM3: An Accurate Open-Source Library for Visual,
+  Visual–Inertial, and Multimap SLAM,"* IEEE Transactions on Robotics, 37(6),
+  2021. [arXiv:2007.11898](https://arxiv.org/abs/2007.11898).
+  Original code: https://github.com/UZ-SLAMLab/ORB_SLAM3
+- **ORB-SLAM (foundational)** — R. Mur-Artal, J. M. M. Montiel, J. D. Tardós,
+  *"ORB-SLAM: A Versatile and Accurate Monocular SLAM System,"* IEEE T-RO, 31(5),
+  2015. [arXiv:1502.00956](https://arxiv.org/abs/1502.00956).
+- **ROS2 port (upstream used here)** — A. K. Sahu et al., `ros2_orb_slam3`:
+  https://github.com/Mechazo11/ros2_orb_slam3
+
 ## Smoke Test
 
 ```bash
