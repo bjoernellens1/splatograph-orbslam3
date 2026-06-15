@@ -26,6 +26,17 @@ For Splatograph integration:
 docker compose -f compose.splatograph.yml up
 ```
 
+## RGB-D tuning & setup
+
+- **[`docs/orbbec-rgbd-setup.md`](docs/orbbec-rgbd-setup.md)** — how to run ORB-SLAM3
+  *nicely* on Orbbec Femto RGB-D: the decompress pipeline, the tuned profile
+  (`ThDepth 60`, `nFeatures 1250`, `DepthMapFactor 1000`), the depth-encoding and
+  c2w-vs-w2c pose-convention traps, and per-bag results.
+- [`docs/2026-06-13-orbbec-rgbd-tuning.md`](docs/2026-06-13-orbbec-rgbd-tuning.md)
+  — the full parameter sweep behind those numbers.
+- TUM RGB-D: `scripts/run_orbslam_tum.sh` + `config/TUM1_RGBD.yaml` (depth is
+  32FC1 metres → `DepthMapFactor 1.0`); eval vs mocap GT via `scripts/../eval_tum.py`.
+
 ## ROS Contract
 
 Default input/output topics are documented in `config/default.yaml`. Provider output is normalized for Splatograph around `/slam/pose`, `/slam/odom`, `/slam/path`, and `/tf` where the upstream method publishes those streams.
