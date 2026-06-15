@@ -34,8 +34,11 @@ docker compose -f compose.splatograph.yml up
   c2w-vs-w2c pose-convention traps, and per-bag results.
 - [`docs/2026-06-13-orbbec-rgbd-tuning.md`](docs/2026-06-13-orbbec-rgbd-tuning.md)
   — the full parameter sweep behind those numbers.
-- TUM RGB-D: `scripts/run_orbslam_tum.sh` + `config/TUM1_RGBD.yaml` (depth is
+- TUM RGB-D: `scripts/run_orbslam_tum.sh` + `config/TUM{1,3}_RGBD.yaml` (depth is
   32FC1 metres → `DepthMapFactor 1.0`); eval vs mocap GT via `scripts/../eval_tum.py`.
+- **[`docs/tum-rgbd-intrinsics.md`](docs/tum-rgbd-intrinsics.md)** — why fr1/fr2/fr3
+  are different cameras (per-family intrinsics + distortion), which config goes
+  with which sequence, and the 32FC1-metres depth-scale gotcha.
 
 ## ROS Contract
 
