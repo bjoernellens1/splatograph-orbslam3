@@ -133,16 +133,25 @@ private:
         Eigen::Vector3f tr = Twc.translation();
         Eigen::Quaternionf q  = Twc.unit_quaternion();
 
+        Eigen::Matrix3f B;
+        B << 0.0f, 0.0f, 1.0f,
+             -1.0f, 0.0f, 0.0f,
+             0.0f, -1.0f, 0.0f;
+        Eigen::Vector3f tr_ros = B * tr;
+        Eigen::Matrix3f R_ros = B * q.toRotationMatrix() * B.transpose();
+        Eigen::Quaternionf q_ros(R_ros);
+        q_ros.normalize();
+
         geometry_msgs::msg::PoseStamped msg;
         msg.header.stamp    = msgRGB->header.stamp;
         msg.header.frame_id = "map";
-        msg.pose.position.x    = static_cast<double>(tr.x());
-        msg.pose.position.y    = static_cast<double>(tr.y());
-        msg.pose.position.z    = static_cast<double>(tr.z());
-        msg.pose.orientation.x = static_cast<double>(q.x());
-        msg.pose.orientation.y = static_cast<double>(q.y());
-        msg.pose.orientation.z = static_cast<double>(q.z());
-        msg.pose.orientation.w = static_cast<double>(q.w());
+        msg.pose.position.x    = static_cast<double>(tr_ros.x());
+        msg.pose.position.y    = static_cast<double>(tr_ros.y());
+        msg.pose.position.z    = static_cast<double>(tr_ros.z());
+        msg.pose.orientation.x = static_cast<double>(q_ros.x());
+        msg.pose.orientation.y = static_cast<double>(q_ros.y());
+        msg.pose.orientation.z = static_cast<double>(q_ros.z());
+        msg.pose.orientation.w = static_cast<double>(q_ros.w());
         pose_pub_->publish(msg);
     }
 
@@ -170,16 +179,26 @@ _POSE_PUB = """\
         Sophus::SE3f Twc = Tcw.inverse();
         Eigen::Vector3f tr = Twc.translation();
         Eigen::Quaternionf q = Twc.unit_quaternion();
+
+        Eigen::Matrix3f B;
+        B << 0.0f, 0.0f, 1.0f,
+             -1.0f, 0.0f, 0.0f,
+             0.0f, -1.0f, 0.0f;
+        Eigen::Vector3f tr_ros = B * tr;
+        Eigen::Matrix3f R_ros = B * q.toRotationMatrix() * B.transpose();
+        Eigen::Quaternionf q_ros(R_ros);
+        q_ros.normalize();
+
         geometry_msgs::msg::PoseStamped msg;
         msg.header.stamp = stamp;
         msg.header.frame_id = "map";
-        msg.pose.position.x = static_cast<double>(tr.x());
-        msg.pose.position.y = static_cast<double>(tr.y());
-        msg.pose.position.z = static_cast<double>(tr.z());
-        msg.pose.orientation.x = static_cast<double>(q.x());
-        msg.pose.orientation.y = static_cast<double>(q.y());
-        msg.pose.orientation.z = static_cast<double>(q.z());
-        msg.pose.orientation.w = static_cast<double>(q.w());
+        msg.pose.position.x = static_cast<double>(tr_ros.x());
+        msg.pose.position.y = static_cast<double>(tr_ros.y());
+        msg.pose.position.z = static_cast<double>(tr_ros.z());
+        msg.pose.orientation.x = static_cast<double>(q_ros.x());
+        msg.pose.orientation.y = static_cast<double>(q_ros.y());
+        msg.pose.orientation.z = static_cast<double>(q_ros.z());
+        msg.pose.orientation.w = static_cast<double>(q_ros.w());
         pose_pub_->publish(msg);
     }
 """
@@ -481,7 +500,7 @@ def main() -> None:
             ),
             (
                 "    //* Perform all ORB-SLAM3 operations in Monocular mode\n    //! Pose with respect to the camera coordinate frame not the world coordinate frame\n    Sophus::SE3f Tcw = pAgent->TrackMonocular(cv_ptr->image, timeStep); \n    \n    //* An example of what can be done after the pose w.r.t camera coordinate frame is computed by ORB SLAM3\n    //Sophus::SE3f Twc = Tcw.inverse(); //* Pose with respect to global image coordinate, reserved for future use\n\n}",
-                "    //* Perform all ORB-SLAM3 operations in Monocular mode\n    //! Pose with respect to the camera coordinate frame not the world coordinate frame\n    Sophus::SE3f Tcw = pAgent->TrackMonocular(cv_ptr->image, timeStep);\n\n    //* Publish Twc (camera->world) so the consumer can place the camera in a world frame.\n    //* The SLAM world frame is the monocular map origin, header.frame_id=\"map\".\n    Sophus::SE3f Twc = Tcw.inverse();\n    Eigen::Vector3f t = Twc.translation();\n    Eigen::Quaternionf q = Twc.unit_quaternion();\n\n    geometry_msgs::msg::PoseStamped pose_msg;\n    pose_msg.header.stamp = msg.header.stamp; // image stamp, so a downstream consumer can sync to it\n    pose_msg.header.frame_id = \"map\";\n    pose_msg.pose.position.x = static_cast<double>(t.x());\n    pose_msg.pose.position.y = static_cast<double>(t.y());\n    pose_msg.pose.position.z = static_cast<double>(t.z());\n    pose_msg.pose.orientation.x = static_cast<double>(q.x());\n    pose_msg.pose.orientation.y = static_cast<double>(q.y());\n    pose_msg.pose.orientation.z = static_cast<double>(q.z());\n    pose_msg.pose.orientation.w = static_cast<double>(q.w());\n    pose_publisher_->publish(pose_msg);\n}",
+                "    //* Perform all ORB-SLAM3 operations in Monocular mode\n    //! Pose with respect to the camera coordinate frame not the world coordinate frame\n    Sophus::SE3f Tcw = pAgent->TrackMonocular(cv_ptr->image, timeStep);\n\n    //* Publish Twc (camera->world) so the consumer can place the camera in a world frame.\n    //* The SLAM world frame is the monocular map origin, header.frame_id=\"map\".\n    Sophus::SE3f Twc = Tcw.inverse();\n    Eigen::Vector3f t = Twc.translation();\n    Eigen::Quaternionf q = Twc.unit_quaternion();\n\n    Eigen::Matrix3f B;\n    B << 0.0f, 0.0f, 1.0f,\n         -1.0f, 0.0f, 0.0f,\n         0.0f, -1.0f, 0.0f;\n    Eigen::Vector3f t_ros = B * t;\n    Eigen::Matrix3f R_ros = B * q.toRotationMatrix() * B.transpose();\n    Eigen::Quaternionf q_ros(R_ros);\n    q_ros.normalize();\n\n    geometry_msgs::msg::PoseStamped pose_msg;\n    pose_msg.header.stamp = msg.header.stamp; // image stamp, so a downstream consumer can sync to it\n    pose_msg.header.frame_id = \"map\";\n    pose_msg.pose.position.x = static_cast<double>(t_ros.x());\n    pose_msg.pose.position.y = static_cast<double>(t_ros.y());\n    pose_msg.pose.position.z = static_cast<double>(t_ros.z());\n    pose_msg.pose.orientation.x = static_cast<double>(q_ros.x());\n    pose_msg.pose.orientation.y = static_cast<double>(q_ros.y());\n    pose_msg.pose.orientation.z = static_cast<double>(q_ros.z());\n    pose_msg.pose.orientation.w = static_cast<double>(q_ros.w());\n    pose_publisher_->publish(pose_msg);\n}",
             ),
             (
                 "    enablePangolinWindow = true; // Shows Pangolin window output\n    enableOpenCVWindow = true; // Shows OpenCV window output",
