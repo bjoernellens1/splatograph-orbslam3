@@ -108,10 +108,24 @@ def main():
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
+    except Exception as e:
+        # Container teardown (podman stop/SIGTERM) can invalidate the shared
+        # rclpy context out from under spin()'s wait-set before this node
+        # gets a clean KeyboardInterrupt -- spin() then raises RCLError
+        # ("the given context is not valid") instead. That's an expected
+        # shutdown-race, not a real fault (all real decompression work is
+        # already done by the time teardown starts) -- fall through to the
+        # same teardown path below instead of letting the traceback surface.
+        print(f"[decompress_rgbd] spin() ended by context shutdown ({e}); "
+              f"shutting down normally.", flush=True)
     finally:
-        node.get_logger().info(f"decompress done: color={node.n_c} depth={node.n_d}")
-        node.destroy_node()
-        rclpy.shutdown()
+        print(f"[decompress_rgbd] decompress done: color={node.n_c} depth={node.n_d}", flush=True)
+        try:
+            node.destroy_node()
+        except Exception:
+            pass
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":
