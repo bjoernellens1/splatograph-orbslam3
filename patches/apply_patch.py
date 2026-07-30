@@ -216,6 +216,7 @@ RGBD_INERTIAL_NODE_CPP = """\
 #include "sensor_msgs/msg/image.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
+#include "std_msgs/msg/int32_multi_array.hpp"
 #include "message_filters/subscriber.h"
 #include "message_filters/synchronizer.h"
 #include "message_filters/sync_policies/approximate_time.h"
@@ -249,6 +250,21 @@ public:
                     voc.c_str(), cfg.c_str(), ctopic.c_str(), dtopic.c_str(), itopic.c_str());
         pSLAM_ = new ORB_SLAM3::System(voc, cfg, ORB_SLAM3::System::IMU_RGBD, false);
         pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/slam/pose", 10);
+        // Tracking-confidence signal (2026-07-30, splatograph consumer:
+        // train_streaming.py's keyframe-admission scoring). Published on a
+        // SEPARATE topic (not embedded in PoseStamped, to avoid a custom-msg
+        // package) but ATOMICALLY -- same GrabRGBD call, always published
+        // immediately after /slam/pose, every single track, unconditionally
+        // -- so a consumer can pair them 1:1 by FIFO ARRIVAL ORDER rather
+        // than by matching header stamps. This deliberately avoids the
+        // ApproximateTime/independently-timestamped-topics sync-pairing bug
+        // class this project already hit once for RGB-D color/depth (see
+        // splatograph's CLAUDE.md HARD CONSTRAINT on hardware/exact sync).
+        // Payload: Int32MultiArray data=[tracking_state, num_tracked_points].
+        // tracking_state mirrors ORB_SLAM3::Tracking::eTrackingState:
+        //   -1=SYSTEM_NOT_READY 0=NO_IMAGES_YET 1=NOT_INITIALIZED
+        //    2=OK 3=RECENTLY_LOST 4=LOST 5=OK_KLT
+        tracking_pub_ = this->create_publisher<std_msgs::msg::Int32MultiArray>("/slam/tracking_status", 10);
         imu_sub_ = this->create_subscription<sensor_msgs::msg::Imu>(
             itopic, rclcpp::SensorDataQoS(),
             std::bind(&RGBDInertialNode::GrabImu, this, std::placeholders::_1));
@@ -286,11 +302,20 @@ private:
             }
         }
         Sophus::SE3f Tcw = pSLAM_->TrackRGBD(cv_rgb->image, cv_depth->image, t, vImu);
+        // Read tracking state/inlier count IMMEDIATELY after TrackRGBD, before
+        // any other SLAM-internal state can advance, and publish it right
+        // alongside the pose -- same callback, same thread, unconditionally.
+        int trackingState = pSLAM_->GetTrackingState();
+        int numTracked = static_cast<int>(pSLAM_->GetTrackedMapPoints().size());
+        std_msgs::msg::Int32MultiArray statusMsg;
+        statusMsg.data = {trackingState, numTracked};
+        tracking_pub_->publish(statusMsg);
         publishPose(Tcw, msgRGB->header.stamp);
     }
 __POSE_PUB__
     ORB_SLAM3::System* pSLAM_ = nullptr;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
+    rclcpp::Publisher<std_msgs::msg::Int32MultiArray>::SharedPtr tracking_pub_;
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
     std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::Image>> color_sub_, depth_sub_;
     std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;
