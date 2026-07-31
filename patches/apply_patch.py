@@ -57,6 +57,7 @@ RGBD_NODE_CPP = """\
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/image.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
+#include "std_msgs/msg/int32_multi_array.hpp"
 #include "message_filters/subscriber.h"
 #include "message_filters/synchronizer.h"
 #include "message_filters/sync_policies/approximate_time.h"
@@ -93,6 +94,14 @@ public:
         pSLAM_ = new ORB_SLAM3::System(voc, cfg, ORB_SLAM3::System::RGBD, false);
 
         pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/slam/pose", 10);
+        // Tracking-confidence signal (2026-07-31) -- see rgbd_inertial_example.cpp's
+        // identical publisher for the full design rationale. This is the node
+        // ACTUALLY used by splatograph's default bag-replay/live path
+        // (05_run_offline_rosbag.sh's SLAM_MODE=rgbd default -> rgbd_node_cpp,
+        // NOT rgbd_inertial_node_cpp) -- verified 2026-07-31 after initially
+        // patching only the inertial variant, which is never launched by that
+        // script's default config.
+        tracking_pub_ = this->create_publisher<std_msgs::msg::Int32MultiArray>("/slam/tracking_status", 10);
 
         color_sub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::Image>>(
             this, ctopic);
@@ -128,6 +137,13 @@ private:
 
         double t = msgRGB->header.stamp.sec + msgRGB->header.stamp.nanosec * 1e-9;
         Sophus::SE3f Tcw = pSLAM_->TrackRGBD(cv_rgb->image, cv_depth->image, t);
+        {
+            int trackingState = pSLAM_->GetTrackingState();
+            int numTracked = static_cast<int>(pSLAM_->GetTrackedMapPoints().size());
+            std_msgs::msg::Int32MultiArray statusMsg;
+            statusMsg.data = {trackingState, numTracked};
+            tracking_pub_->publish(statusMsg);
+        }
 
         Sophus::SE3f Twc = Tcw.inverse();
         Eigen::Vector3f tr = Twc.translation();
@@ -157,6 +173,7 @@ private:
 
     ORB_SLAM3::System* pSLAM_ = nullptr;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
+    rclcpp::Publisher<std_msgs::msg::Int32MultiArray>::SharedPtr tracking_pub_;
     std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::Image>> color_sub_;
     std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::Image>> depth_sub_;
     std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;
