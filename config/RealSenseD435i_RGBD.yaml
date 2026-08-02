@@ -1,0 +1,70 @@
+%YAML:1.0
+#--------------------------------------------------------------------------------------------
+# RealSense D435i - RGB-D mode (2026-08-01, for the realsense_bag_republisher.py
+# validation path -- NOT a live-camera production config; see
+# scripts/realsense_bag_republisher.py in the splatograph repo for context).
+#
+# Intrinsics pulled directly from the real bag's pyrealsense2 color stream
+# (20260519_realsensed435i_cps_2ndfloor_hallway.bag), NOT a factory/generic
+# default -- ci.fx/fy/ppx/ppy at native color resolution 1280x720. No
+# distortion coefficients available from this readout (pyrealsense2's
+# brown_conrady intrinsics were not captured at extraction time); set to
+# zero for now (D435i's distortion is typically small at this resolution --
+# acceptable for a tracking-degradation validation scene, not for
+# quantitative ATE work).
+#--------------------------------------------------------------------------------------------
+File.version: "1.0"
+Camera.type: "PinHole"
+
+Camera1.fx: 907.2616
+Camera1.fy: 906.7314
+Camera1.cx: 651.0420
+Camera1.cy: 370.7961
+Camera1.k1: 0.0
+Camera1.k2: 0.0
+Camera1.p1: 0.0
+Camera1.p2: 0.0
+Camera1.k3: 0.0
+
+Camera.width: 1280
+Camera.height: 720
+Camera.fps: 30
+# realsense_bag_republisher.py publishes rgb8 (BGR->RGB swap applied if the
+# bag's native format is bgr8) -- so RGB=1, not the Orbbec decompress_rgbd
+# convention (RGB=0/bgr8).
+Camera.RGB: 1
+
+#--------------------------------------------------------------------------------------------
+# RGB-D
+#--------------------------------------------------------------------------------------------
+# Depth is aligned to color (rs.align(rs.stream.color) applied in the
+# republisher) and encoded 16UC1 in millimetres (pyrealsense2 default depth
+# unit for the D435i), matching ORB-SLAM3's expected DepthMapFactor convention.
+RGBD.DepthMapFactor: 1000.0
+Stereo.b: 0.0500
+# Untuned starting point (D435i baseline ~50mm, same ballpark as Femto);
+# revisit if far-range noise pollutes tracking on this validation run.
+Stereo.ThDepth: 40.0
+
+#--------------------------------------------------------------------------------------------
+# ORB
+#--------------------------------------------------------------------------------------------
+ORBextractor.nFeatures: 1250
+ORBextractor.scaleFactor: 1.2
+ORBextractor.nLevels: 8
+ORBextractor.iniThFAST: 20
+ORBextractor.minThFAST: 7
+
+#--------------------------------------------------------------------------------------------
+# Viewer (Pangolin disabled at runtime)
+#--------------------------------------------------------------------------------------------
+Viewer.KeyFrameSize: 0.05
+Viewer.KeyFrameLineWidth: 1.0
+Viewer.GraphLineWidth: 0.9
+Viewer.PointSize: 2.0
+Viewer.CameraSize: 0.08
+Viewer.CameraLineWidth: 3.0
+Viewer.ViewpointX: 0.0
+Viewer.ViewpointY: -0.7
+Viewer.ViewpointZ: -3.5
+Viewer.ViewpointF: 500.0

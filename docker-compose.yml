@@ -9,7 +9,7 @@ services:
     environment:
       ROS_DISTRO: jazzy
       ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
-      RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+      RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_zenoh_cpp}
       RCUTILS_COLORIZED_OUTPUT: '1'
       SLAM_MODE: ${SLAM_MODE:-rgbd}
       IMAGE_TOPIC: ${IMAGE_TOPIC:-/camera/color/image_raw}
@@ -31,7 +31,7 @@ services:
     environment:
       ROS_DISTRO: jazzy
       ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
-      RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+      RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_zenoh_cpp}
     volumes:
       - ${BAGS_HOST_PATH:-/mnt/cps_persistent1_shared/datasets}:/bags:ro
     command: ["bash", "-lc", "source /opt/ros/jazzy/setup.bash && ros2 bag play ${BAG_PATH:-/bags/input} --clock"]

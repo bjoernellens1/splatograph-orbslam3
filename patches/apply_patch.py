@@ -58,6 +58,9 @@ RGBD_NODE_CPP = """\
 #include "sensor_msgs/msg/image.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "std_msgs/msg/int32_multi_array.hpp"
+#include "diagnostic_msgs/msg/diagnostic_array.hpp"
+#include "diagnostic_msgs/msg/diagnostic_status.hpp"
+#include "diagnostic_msgs/msg/key_value.hpp"
 #include "message_filters/subscriber.h"
 #include "message_filters/synchronizer.h"
 #include "message_filters/sync_policies/approximate_time.h"
@@ -102,6 +105,21 @@ public:
         // patching only the inertial variant, which is never launched by that
         // script's default config.
         tracking_pub_ = this->create_publisher<std_msgs::msg::Int32MultiArray>("/slam/tracking_status", 10);
+        // Stamped companion (2026-08-02): the Int32MultiArray above carries no
+        // header, so a downstream consumer pairing it with /slam/pose can only
+        // do so by FIFO arrival order across two independently-scheduled ROS2
+        // subscription callbacks -- NOT a real ordering guarantee (confirmed
+        // empirically: pose consistently beat tracking_status to the
+        // subscriber on a live RealSense-bag smoke test, 2026-08-02, so the
+        // FIFO pairing was silently always empty/None). This publishes the
+        // SAME data with header.stamp = msgRGB->header.stamp (the identical
+        // frame time /slam/pose itself stamps with, below) on a NEW topic, so
+        // the consumer can do an exact-stamp-key join instead of a FIFO/
+        // tolerance-window guess. /slam/pose and /slam/tracking_status are
+        // both left unchanged (other real consumers: RViz, stack_monitor.py,
+        // slam_loop_closure_node.py) -- this is purely additive.
+        tracking_stamped_pub_ = this->create_publisher<diagnostic_msgs::msg::DiagnosticArray>(
+            "/slam/tracking_status_stamped", 10);
 
         color_sub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::Image>>(
             this, ctopic);
@@ -143,6 +161,24 @@ private:
             std_msgs::msg::Int32MultiArray statusMsg;
             statusMsg.data = {trackingState, numTracked};
             tracking_pub_->publish(statusMsg);
+
+            // Stamped companion -- header.stamp = msgRGB->header.stamp, the
+            // SAME value /slam/pose stamps with below, so a consumer can join
+            // by exact stamp key instead of FIFO arrival order (see the
+            // publisher-construction comment above for why FIFO doesn't work).
+            diagnostic_msgs::msg::DiagnosticArray statusStampedMsg;
+            statusStampedMsg.header.stamp = msgRGB->header.stamp;
+            diagnostic_msgs::msg::DiagnosticStatus statusEntry;
+            statusEntry.name = "orb_slam3_tracking_status";
+            diagnostic_msgs::msg::KeyValue stateKV;
+            stateKV.key = "state";
+            stateKV.value = std::to_string(trackingState);
+            diagnostic_msgs::msg::KeyValue numTrackedKV;
+            numTrackedKV.key = "num_tracked";
+            numTrackedKV.value = std::to_string(numTracked);
+            statusEntry.values = {stateKV, numTrackedKV};
+            statusStampedMsg.status = {statusEntry};
+            tracking_stamped_pub_->publish(statusStampedMsg);
         }
 
         Sophus::SE3f Twc = Tcw.inverse();
@@ -174,6 +210,7 @@ private:
     ORB_SLAM3::System* pSLAM_ = nullptr;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
     rclcpp::Publisher<std_msgs::msg::Int32MultiArray>::SharedPtr tracking_pub_;
+    rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr tracking_stamped_pub_;
     std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::Image>> color_sub_;
     std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::Image>> depth_sub_;
     std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;
@@ -588,18 +625,42 @@ def main() -> None:
     else:
         print("package.xml already has geometry_msgs - skipping (idempotent rerun)")
 
+    # diagnostic_msgs (2026-08-02): stamped tracking-status companion message
+    # on /slam/tracking_status_stamped -- see RGBD_NODE_CPP's publisher below.
+    # Separate, unconditional patch (not folded into the geometry_msgs guard
+    # above, which short-circuits once geometry_msgs is already present in
+    # package.xml -- diagnostic_msgs needs its own idempotent guard).
+    pkg_text = pkg.read_text()
+    if "<depend>diagnostic_msgs</depend>" not in pkg_text and "<build_depend>diagnostic_msgs</build_depend>" not in pkg_text:
+        patch(
+            pkg,
+            [
+                (
+                    "  <build_depend>boost_serialization</build_depend>",
+                    "  <build_depend>diagnostic_msgs</build_depend>\n  <build_depend>boost_serialization</build_depend>",
+                ),
+                (
+                    "  <exec_depend>boost_serialization</exec_depend>",
+                    "  <exec_depend>diagnostic_msgs</exec_depend>\n  <exec_depend>boost_serialization</exec_depend>",
+                ),
+            ],
+            "package.xml (diagnostic_msgs)",
+        )
+    else:
+        print("package.xml already has diagnostic_msgs - skipping (idempotent rerun)")
+
     patch(
         cmk,
         [
             # find_package: add geometry_msgs + message_filters before Pangolin
             (
                 "find_package(Eigen3 3.3.0 REQUIRED) # Matched with Sophus\nfind_package(Pangolin REQUIRED)",
-                "find_package(Eigen3 3.3.0 REQUIRED) # Matched with Sophus\nfind_package(geometry_msgs REQUIRED)\nfind_package(message_filters REQUIRED)\nfind_package(Pangolin REQUIRED)",
+                "find_package(Eigen3 3.3.0 REQUIRED) # Matched with Sophus\nfind_package(geometry_msgs REQUIRED)\nfind_package(message_filters REQUIRED)\nfind_package(diagnostic_msgs REQUIRED)\nfind_package(Pangolin REQUIRED)",
             ),
-            # THIS_PACKAGE_INCLUDE_DEPENDS: add geometry_msgs + message_filters
+            # THIS_PACKAGE_INCLUDE_DEPENDS: add geometry_msgs + message_filters + diagnostic_msgs
             (
                 "set(THIS_PACKAGE_INCLUDE_DEPENDS\n  rclcpp\n  rclpy\n  std_msgs\n  sensor_msgs\n  # your_custom_msg_interface\n  cv_bridge\n  image_transport\n  OpenCV\n  Eigen3\n  Pangolin\n)",
-                "set(THIS_PACKAGE_INCLUDE_DEPENDS\n  rclcpp\n  rclpy\n  std_msgs\n  sensor_msgs\n  # your_custom_msg_interface\n  cv_bridge\n  image_transport\n  OpenCV\n  geometry_msgs\n  message_filters\n  Eigen3\n  Pangolin\n)",
+                "set(THIS_PACKAGE_INCLUDE_DEPENDS\n  rclcpp\n  rclpy\n  std_msgs\n  sensor_msgs\n  # your_custom_msg_interface\n  cv_bridge\n  image_transport\n  OpenCV\n  geometry_msgs\n  message_filters\n  diagnostic_msgs\n  Eigen3\n  Pangolin\n)",
             ),
             # Add rgbd_node_cpp executable after mono_node_cpp
             (
@@ -626,6 +687,41 @@ def main() -> None:
         ],
         "CMakeLists.txt",
     )
+
+    # NaN/degenerate-pose guard in Relocalization() (2026-08-01): a degraded-
+    # tracking scene (RealSense hallway bag, real ORB-SLAM3, 16.1% RECENTLY_LOST
+    # over a genuine hard trajectory segment) crashed with:
+    #   "Sophus ensure failed ... SO3::exp failed! omega: -nan -nan -nan"
+    # (core dump). Root cause: MLPnPsolver::iterate()'s RANSAC can return a
+    # degenerate eigTcw (near-singular linear solve when the surviving inlier
+    # geometry is nearly planar/too sparse under sustained tracking loss) --
+    # Sophus::SE3f's constructor does not validate its input, so a NaN or
+    # non-orthonormal rotation block silently becomes mCurrentFrame's pose and
+    # propagates into Optimizer::PoseOptimization's g2o solve, which calls
+    # SO3::exp on an ever-more-degenerate Jacobian update until it hits NaN and
+    # Sophus's internal assertion aborts the whole process.
+    # Fix: validate eigTcw immediately after RANSAC returns it, before it is
+    # ever wrapped in an SE3f or handed to SetPose/PoseOptimization -- reject
+    # the candidate (fall through exactly as the existing `bNoMore`/`nGood<10`
+    # rejection paths already do a few lines below) instead of letting a
+    # degenerate pose propagate. This is a REJECT of a candidate the same
+    # solver already treats as fallible, not a catch/suppress -- the real
+    # tracking-loss signal (mState transitions, tracking_status publisher) is
+    # untouched; only a numerically garbage relocalization candidate is
+    # discarded before it can crash the process.
+    # REVERTED 2026-08-02 (both the Tracking.cc relocalization guard and a
+    # broader so3.hpp guard tried after it): a so3.hpp-level SO3::exp NaN guard was tried here
+    # and then reverted per explicit direction -- ORB-SLAM3/Sophus is mature,
+    # widely-used code; a NaN crash appearing specifically through this
+    # project's hand-built pyrealsense2 RealSense-bag republisher (which
+    # nothing else in this project uses -- floor2/floor3/kitchen1 all go
+    # through the Orbbec driver's native ROS2 publishing) is far more likely
+    # a data-path defect in the republisher than an ORB-SLAM3 bug. Patching
+    # library internals to survive bad input would mask the real problem
+    # rather than fix it. Redirected investigation to
+    # scripts/realsense_bag_republisher.py's depth scale/intrinsics/alignment/
+    # timestamp-pairing correctness instead -- see that file's own comments
+    # and the splatograph repo's investigation notes for what was checked.
 
     # Write the new node source files (RGB-D + Orbbec VIO + RealSense stereo/VIO)
     write_file(src / "src" / "rgbd_example.cpp", RGBD_NODE_CPP, "rgbd_example.cpp")

@@ -14,12 +14,12 @@
 #   CAMERA_CONFIG_PATH - if set, overrides DIR+NAME; must end in .yaml
 #   VOCABULARY         - ORB vocabulary file
 #   ROS_DOMAIN_ID      - DDS domain (default 0)
-#   RMW_IMPLEMENTATION - DDS impl (default rmw_fastrtps_cpp)
+#   RMW_IMPLEMENTATION - ROS middleware impl (default rmw_zenoh_cpp)
 set -eo pipefail
 
 : "${ROS_DOMAIN_ID:=0}"
 export ROS_DOMAIN_ID
-export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
+export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_zenoh_cpp}"
 
 source /opt/ros/${ROS_DISTRO:-jazzy}/setup.bash
 source /opt/orbslam3_ws/install/setup.bash
