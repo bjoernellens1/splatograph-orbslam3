@@ -7,8 +7,32 @@
 #
 # Env vars (with defaults):
 #   SLAM_MODE          - "rgbd" or "mono"  (default rgbd)
-#   IMAGE_TOPIC        - raw colour image topic (default /camera/color/image_raw)
-#   DEPTH_TOPIC        - raw depth image topic  (default /camera/depth/image_raw; rgbd only)
+#   RGBD_SYNCED_TOPIC  - splatograph_rgbd_msgs/RGBDSynced topic (default
+#                         /camera/rgbd_synced; rgbd/rgbd_inertial only).
+#                         Migrated 2026-08-23 (#3): rgbd_node_cpp and
+#                         rgbd_inertial_node_cpp no longer subscribe to
+#                         independent color/depth topics -- they consume the
+#                         single already-paired RGBDSynced message published
+#                         by splatograph-rgbd-sync's SyncNode.
+#   RUN_SYNC_NODE      - "1" (default) launches splatograph_rgbd_sync's
+#                         sync_node in-container, fed by CAMERA_COLOR_TOPIC/
+#                         CAMERA_DEPTH_TOPIC/CAMERA_IMU_TOPIC/the two
+#                         *_INFO_TOPIC vars below, remapped to publish
+#                         RGBD_SYNCED_TOPIC. Set "0" when RGBD_SYNCED_TOPIC is
+#                         already published by something else upstream (e.g.
+#                         a shared sync_node run once for multiple consumers,
+#                         or a validated hardware-synced source doing
+#                         assert-only verification per that repo's README) --
+#                         this container then only subscribes.
+#   CAMERA_COLOR_TOPIC / CAMERA_DEPTH_TOPIC / CAMERA_IMU_TOPIC
+#                      - raw sync_node inputs (defaults /camera/color/image_raw,
+#                        /camera/depth/image_raw, /camera/imu)
+#   CAMERA_COLOR_INFO_TOPIC / CAMERA_DEPTH_INFO_TOPIC
+#                      - CameraInfo inputs (defaults /camera/color/camera_info,
+#                        /camera/depth/camera_info) -- sync_node drops every
+#                        pair until both have arrived at least once (see
+#                        splatograph-rgbd-sync's README).
+#   IMAGE_TOPIC        - raw colour image topic (mono mode only; legacy)
 #   CAMERA_CONFIG_NAME - yaml basename without .yaml  (default OrbbecFemtoMega_RGBD / RealSense_D435i)
 #   CAMERA_CONFIG_DIR  - directory containing <CAMERA_CONFIG_NAME>.yaml (default /config/)
 #   CAMERA_CONFIG_PATH - if set, overrides DIR+NAME; must end in .yaml
@@ -22,15 +46,16 @@ export ROS_DOMAIN_ID
 export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
 
 source /opt/ros/${ROS_DISTRO:-jazzy}/setup.bash
+source /opt/rgbd_sync_ws/install/setup.bash
 source /opt/orbslam3_ws/install/setup.bash
 
-export LD_LIBRARY_PATH="/opt/ros/${ROS_DISTRO:-jazzy}/lib:/opt/orbslam3_ws/install/lib:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="/opt/ros/${ROS_DISTRO:-jazzy}/lib:/opt/rgbd_sync_ws/install/lib:/opt/orbslam3_ws/install/lib:${LD_LIBRARY_PATH:-}"
 export LD_LIBRARY_PATH="/usr/local/lib:${LD_LIBRARY_PATH}"
 
 # Translate CAMERA_CONFIG_PATH (full file path) into CAMERA_CONFIG_DIR+NAME
 SLAM_MODE=${SLAM_MODE:-rgbd}
 IMAGE_TOPIC=${IMAGE_TOPIC:-/camera/color/image_raw}
-DEPTH_TOPIC=${DEPTH_TOPIC:-/camera/depth/image_raw}
+RGBD_SYNCED_TOPIC=${RGBD_SYNCED_TOPIC:-/camera/rgbd_synced}
 
 if [ "${SLAM_MODE}" = "rgbd" ]; then
     CAMERA_CONFIG_NAME=${CAMERA_CONFIG_NAME:-OrbbecFemtoMega_RGBD}
@@ -54,17 +79,56 @@ fi
 
 VOCABULARY=${VOCABULARY:-/opt/orbslam3_ws/src/ros2_orb_slam3/orb_slam3/Vocabulary/ORBvoc.txt.bin}
 
+RUN_SYNC_NODE=${RUN_SYNC_NODE:-1}
+CAMERA_COLOR_TOPIC=${CAMERA_COLOR_TOPIC:-/camera/color/image_raw}
+CAMERA_DEPTH_TOPIC=${CAMERA_DEPTH_TOPIC:-/camera/depth/image_raw}
+CAMERA_IMU_TOPIC=${CAMERA_IMU_TOPIC:-/camera/imu}
+CAMERA_COLOR_INFO_TOPIC=${CAMERA_COLOR_INFO_TOPIC:-/camera/color/camera_info}
+CAMERA_DEPTH_INFO_TOPIC=${CAMERA_DEPTH_INFO_TOPIC:-/camera/depth/camera_info}
+# Resolved via `ros2 pkg prefix` rather than a hardcoded
+# /opt/rgbd_sync_ws/install/lib/... path: splatograph-rgbd-sync's own
+# published image is not guaranteed to be a --merge-install layout (its
+# per-package layout nests each package under install/<pkg_name>/ instead),
+# and `ros2 pkg prefix` resolves correctly either way via the ament index
+# that /opt/rgbd_sync_ws/install/setup.bash (sourced above) already set up.
+SYNC_NODE="$(ros2 pkg prefix splatograph_rgbd_sync)/lib/splatograph_rgbd_sync/sync_node"
+sync_pid=""
+
+# splatograph_rgbd_sync's SyncNode is the sole authoritative pairing owner
+# (splatograph's CLAUDE.md HARD CONSTRAINT + that repo's own README topology)
+# -- rgbd_node_cpp/rgbd_inertial_node_cpp deliberately do their own pairing
+# work no more. Launched in the background here so this container's existing
+# single-process bag-replay/live topology keeps working without requiring a
+# second container; RUN_SYNC_NODE=0 opts out when something else already
+# publishes RGBD_SYNCED_TOPIC.
+start_sync_node() {
+    if [ "${RUN_SYNC_NODE}" != "1" ]; then
+        echo "slam-launch: RUN_SYNC_NODE=0, expecting ${RGBD_SYNCED_TOPIC} to already be published externally"
+        return
+    fi
+    echo "slam-launch: sync_node  color=${CAMERA_COLOR_TOPIC} depth=${CAMERA_DEPTH_TOPIC} imu=${CAMERA_IMU_TOPIC} -> ${RGBD_SYNCED_TOPIC}"
+    "${SYNC_NODE}" --ros-args \
+      -p color_topic:=${CAMERA_COLOR_TOPIC} \
+      -p depth_topic:=${CAMERA_DEPTH_TOPIC} \
+      -p imu_topic:=${CAMERA_IMU_TOPIC} \
+      -p color_camera_info_topic:=${CAMERA_COLOR_INFO_TOPIC} \
+      -p depth_camera_info_topic:=${CAMERA_DEPTH_INFO_TOPIC} \
+      -r rgbd_synced:=${RGBD_SYNCED_TOPIC} &
+    sync_pid=$!
+}
+
 # ── RGB-D mode ──────────────────────────────────────────────────────────────
 if [ "${SLAM_MODE}" = "rgbd" ]; then
     RGBD_CPP=/opt/orbslam3_ws/install/lib/ros2_orb_slam3/rgbd_node_cpp
-    echo "slam-launch: RGB-D mode  color=${IMAGE_TOPIC}  depth=${DEPTH_TOPIC}"
+    echo "slam-launch: RGB-D mode  rgbd_synced=${RGBD_SYNCED_TOPIC}"
     echo "slam-launch: config=${CAMERA_CONFIG_DIR}${CAMERA_CONFIG_NAME}.yaml"
+    start_sync_node
+    trap 'kill "${sync_pid}" 2>/dev/null || true' EXIT
     "${RGBD_CPP}" --ros-args \
       -p voc_file_arg:=${VOCABULARY} \
       -p settings_file_path_arg:=${CAMERA_CONFIG_DIR} \
       -p settings_name_arg:=${CAMERA_CONFIG_NAME} \
-      -p color_topic:=${IMAGE_TOPIC} \
-      -p depth_topic:=${DEPTH_TOPIC}
+      -p rgbd_synced_topic:=${RGBD_SYNCED_TOPIC}
     exit $?
 fi
 
@@ -74,15 +138,18 @@ LEFT_TOPIC=${LEFT_TOPIC:-/camera/infra1/image_rect_raw}
 RIGHT_TOPIC=${RIGHT_TOPIC:-/camera/infra2/image_rect_raw}
 
 # ── RGB-D-Inertial mode (Orbbec Femto VIO: colour + depth + IMU) ─────────────
+# IMU samples arrive packaged inside RGBDSynced.imu_samples (no separate
+# imu_topic subscription any more -- see rgbd_inertial_example.cpp's own
+# migration comment).
 if [ "${SLAM_MODE}" = "rgbd_inertial" ] || [ "${SLAM_MODE}" = "vio_rgbd" ]; then
-    echo "slam-launch: RGBD-Inertial  color=${IMAGE_TOPIC} depth=${DEPTH_TOPIC} imu=${IMU_TOPIC}  config=${CAMERA_CONFIG_DIR}${CAMERA_CONFIG_NAME}.yaml"
+    echo "slam-launch: RGBD-Inertial  rgbd_synced=${RGBD_SYNCED_TOPIC}  config=${CAMERA_CONFIG_DIR}${CAMERA_CONFIG_NAME}.yaml"
+    start_sync_node
+    trap 'kill "${sync_pid}" 2>/dev/null || true' EXIT
     "${LIB}/rgbd_inertial_node_cpp" --ros-args \
       -p voc_file_arg:=${VOCABULARY} \
       -p settings_file_path_arg:=${CAMERA_CONFIG_DIR} \
       -p settings_name_arg:=${CAMERA_CONFIG_NAME} \
-      -p color_topic:=${IMAGE_TOPIC} \
-      -p depth_topic:=${DEPTH_TOPIC} \
-      -p imu_topic:=${IMU_TOPIC}
+      -p rgbd_synced_topic:=${RGBD_SYNCED_TOPIC}
     exit $?
 fi
 

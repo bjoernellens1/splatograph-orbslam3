@@ -17,14 +17,20 @@ PLAY_EXTRA=""
 [ "$DURATION" != "0" ] && PLAY_EXTRA="--playback-duration $DURATION"
 
 source /opt/ros/jazzy/setup.bash
+source /opt/rgbd_sync_ws/install/setup.bash
 source /opt/orbslam3_ws/install/setup.bash
 export PYTHONPATH="/splatograph:${PYTHONPATH:-}"
 VOC=/opt/orbslam3_ws/src/ros2_orb_slam3/orb_slam3/Vocabulary/ORBvoc.txt.bin
 CDIR="$(cd "$(dirname "$CONFIG")" && pwd)/"
 CNAME="$(basename "$CONFIG" .yaml)"
 # SLAM_NODE: rgbd_node_cpp (default) or rgbd_inertial_node_cpp (Orbbec VIO).
-# EXTRA_PARAMS: e.g. "-p imu_topic:=/camera/imu" for the inertial node.
+# EXTRA_PARAMS: e.g. "-p imu_topic:=/camera/imu" for the inertial node --
+# NOTE: since the #3 RGBDSynced migration, rgbd_inertial_node_cpp has no
+# imu_topic parameter any more (IMU arrives inside RGBDSynced.imu_samples);
+# EXTRA_PARAMS is kept for forward compat but stale imu_topic overrides here
+# are now a no-op, not an error (ROS2 silently ignores unused -p args).
 RGBD=/opt/orbslam3_ws/install/lib/ros2_orb_slam3/${SLAM_NODE:-rgbd_node_cpp}
+SYNC_NODE=/opt/rgbd_sync_ws/install/lib/splatograph_rgbd_sync/sync_node
 POSE_BAG="${OUTDIR}/${LABEL}_poses"
 mkdir -p "$OUTDIR"; rm -rf "$POSE_BAG"
 
@@ -33,14 +39,26 @@ now() { date +%s.%N; }
 T_start=$(now)
 INIT_TIMEOUT="${INIT_WAIT:-30}"
 
-# 1. decompress compressed color/depth -> raw Image for the rgbd node
+# 1. decompress compressed color/depth -> raw Image (decode-only; no pairing
+#    -- see decompress_rgbd_node.py's own migration comment)
 python3 /scripts/decompress_rgbd_node.py --ros-args \
   -p color_in:=/camera/color/image_raw/compressed \
   -p depth_in:=/camera/depth/image_raw/compressed \
   -p color_out:=/camera/color/image_raw \
   -p depth_out:=/camera/depth/image_raw \
-  -p color_encoding:=bgr8 -p sync:=${DECOMP_SYNC:-true} > "${OUTDIR}/${LABEL}.decompress.log" 2>&1 &
+  -p color_encoding:=bgr8 > "${OUTDIR}/${LABEL}.decompress.log" 2>&1 &
 DPID=$!
+
+# 1b. splatograph_rgbd_sync's SyncNode: sole authoritative color/depth(+IMU)
+#     pairing owner (#3 migration, replaces this script's former
+#     ApproximateTime `sync:=true` decompress-node option). Publishes
+#     RGBDSynced on /camera/rgbd_synced for the SLAM node below.
+"$SYNC_NODE" --ros-args \
+  -p color_topic:=/camera/color/image_raw \
+  -p depth_topic:=/camera/depth/image_raw \
+  -p imu_topic:=/camera/imu \
+  -r rgbd_synced:=/camera/rgbd_synced > "${OUTDIR}/${LABEL}.sync.log" 2>&1 &
+YPID=$!
 
 # 2. ORB-SLAM3 RGB-D node (loads vocab). Wait for the node's "ready" log line
 #    (measures real init/vocab-load time) instead of a fixed conservative sleep.
@@ -48,8 +66,7 @@ DPID=$!
   -p voc_file_arg:="$VOC" \
   -p settings_file_path_arg:="$CDIR" \
   -p settings_name_arg:="$CNAME" \
-  -p color_topic:=/camera/color/image_raw \
-  -p depth_topic:=/camera/depth/image_raw ${EXTRA_PARAMS:-} > "${OUTDIR}/${LABEL}.slam.log" 2>&1 &
+  -p rgbd_synced_topic:=/camera/rgbd_synced ${EXTRA_PARAMS:-} > "${OUTDIR}/${LABEL}.slam.log" 2>&1 &
 SPID=$!
 SLAM_LOG="${OUTDIR}/${LABEL}.slam.log"
 for i in $(seq 1 "$((INIT_TIMEOUT*4))"); do
@@ -71,8 +88,8 @@ sleep 4
 
 # 5. shut down recorder + slam + decompress
 kill -INT "$RPID" 2>/dev/null || true; sleep 3
-kill -INT "$SPID" "$DPID" 2>/dev/null || true; sleep 2
-kill "$SPID" "$DPID" "$RPID" 2>/dev/null || true
+kill -INT "$SPID" "$YPID" "$DPID" 2>/dev/null || true; sleep 2
+kill "$SPID" "$YPID" "$DPID" "$RPID" 2>/dev/null || true
 wait 2>/dev/null || true
 
 # 6. evaluate trajectory vs O3D reference

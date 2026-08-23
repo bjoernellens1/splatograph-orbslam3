@@ -12,8 +12,19 @@ services:
       RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
       RCUTILS_COLORIZED_OUTPUT: '1'
       SLAM_MODE: ${SLAM_MODE:-rgbd}
+      # RGBDSynced migration (#3, 2026-08-23): rgbd/rgbd_inertial modes now
+      # run splatograph_rgbd_sync's sync_node in-container (RUN_SYNC_NODE=1
+      # default) fed by the CAMERA_*_TOPIC vars, publishing RGBD_SYNCED_TOPIC
+      # for rgbd_node_cpp/rgbd_inertial_node_cpp to subscribe to -- see
+      # scripts/slam-launch's own header comment for the full var list.
       IMAGE_TOPIC: ${IMAGE_TOPIC:-/camera/color/image_raw}
-      DEPTH_TOPIC: ${DEPTH_TOPIC:-/camera/depth/image_raw}
+      RGBD_SYNCED_TOPIC: ${RGBD_SYNCED_TOPIC:-/camera/rgbd_synced}
+      RUN_SYNC_NODE: ${RUN_SYNC_NODE:-1}
+      CAMERA_COLOR_TOPIC: ${CAMERA_COLOR_TOPIC:-/camera/color/image_raw}
+      CAMERA_DEPTH_TOPIC: ${CAMERA_DEPTH_TOPIC:-/camera/depth/image_raw}
+      CAMERA_IMU_TOPIC: ${CAMERA_IMU_TOPIC:-/camera/imu}
+      CAMERA_COLOR_INFO_TOPIC: ${CAMERA_COLOR_INFO_TOPIC:-/camera/color/camera_info}
+      CAMERA_DEPTH_INFO_TOPIC: ${CAMERA_DEPTH_INFO_TOPIC:-/camera/depth/camera_info}
       CAMERA_CONFIG_NAME: ${CAMERA_CONFIG_NAME:-OrbbecFemtoMega_RGBD}
       CAMERA_CONFIG_DIR: ${CAMERA_CONFIG_DIR:-/config/}
       CAMERA_CONFIG_PATH: ${CAMERA_CONFIG_PATH:-}
