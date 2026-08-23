@@ -54,14 +54,17 @@ check "decompress_rgbd_node.py has no ApproximateTimeSynchronizer usage" \
 check "decompress_rgbd_node.py has no sync parameter" \
     '! grep -q "declare_parameter(\"sync\"" scripts/decompress_rgbd_node.py'
 
-# Dockerfile must vendor splatograph_rgbd_msgs + splatograph_rgbd_sync at a
-# pinned commit and build them into the ORB-SLAM3 overlay.
-check "Dockerfile pins RGBD_SYNC_REF" \
-    'grep -q "ARG RGBD_SYNC_REF=" Dockerfile'
-check "Dockerfile clones splatograph-rgbd-sync" \
-    'grep -q "splatograph-rgbd-sync.git" Dockerfile'
-check "Dockerfile builds splatograph_rgbd_msgs splatograph_rgbd_sync" \
-    'grep -q "packages-select splatograph_rgbd_msgs splatograph_rgbd_sync" Dockerfile'
+# Dockerfile must vendor splatograph_rgbd_msgs + splatograph_rgbd_sync into
+# the ORB-SLAM3 overlay. splatograph-rgbd-sync is a private repo, so this is
+# pulled as a prebuilt image (splatograph-rgbd-sync#16/#17) rather than
+# git-cloned+built from source -- an unauthenticated git clone of a private
+# repo fails in CI, which is exactly what this migration originally hit.
+check "Dockerfile pins RGBD_SYNC_IMAGE" \
+    'grep -q "ARG RGBD_SYNC_IMAGE=" Dockerfile'
+check "Dockerfile pulls splatograph-rgbd-sync as a prebuilt GHCR image" \
+    'grep -q "ghcr.io/bjoernellens1/splatograph-rgbd-sync" Dockerfile'
+check "Dockerfile copies rgbd_sync_ws install from that image" \
+    'grep -q "COPY --from=rgbd_sync /opt/rgbd_sync_ws/install" Dockerfile'
 check "Dockerfile now invokes apply_patch.py (was previously never called on main)" \
     'grep -q "apply_orbslam_patch.py" Dockerfile'
 

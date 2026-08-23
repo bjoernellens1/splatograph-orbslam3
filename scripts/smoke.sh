@@ -30,6 +30,11 @@ RGBD_INERTIAL_SRC=/opt/orbslam3_ws/src/ros2_orb_slam3/src/rgbd_inertial_example.
 for f in "${RGBD_SRC}" "${RGBD_INERTIAL_SRC}"; do
     grep -q 'rgbd_synced_topic' "${f}" || { echo "smoke: ${f} missing rgbd_synced_topic param" >&2; exit 1; }
     grep -qE 'declare_parameter\("(color|depth)_topic"' "${f}" && { echo "smoke: ${f} still declares color_topic/depth_topic (should consume RGBDSynced only)" >&2; exit 1; }
-    grep -q 'ApproximateTime' "${f}" && { echo "smoke: ${f} still references ApproximateTime (should be RGBDSynced-fed, no re-pairing)" >&2; exit 1; }
+    # sync_policies::ApproximateTime is the actual code usage (see
+    # stereo_example.cpp for the analogous ExactTime pattern); a bare
+    # "ApproximateTime" match also fires on this file's own explanatory
+    # comments about why it no longer re-pairs topics, which is not a
+    # regression -- so require the qualified, code-only spelling.
+    grep -q 'sync_policies::ApproximateTime' "${f}" && { echo "smoke: ${f} still references message_filters::sync_policies::ApproximateTime (should be RGBDSynced-fed, no re-pairing)" >&2; exit 1; }
 done
 true
