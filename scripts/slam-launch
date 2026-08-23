@@ -85,7 +85,13 @@ CAMERA_DEPTH_TOPIC=${CAMERA_DEPTH_TOPIC:-/camera/depth/image_raw}
 CAMERA_IMU_TOPIC=${CAMERA_IMU_TOPIC:-/camera/imu}
 CAMERA_COLOR_INFO_TOPIC=${CAMERA_COLOR_INFO_TOPIC:-/camera/color/camera_info}
 CAMERA_DEPTH_INFO_TOPIC=${CAMERA_DEPTH_INFO_TOPIC:-/camera/depth/camera_info}
-SYNC_NODE=/opt/rgbd_sync_ws/install/lib/splatograph_rgbd_sync/sync_node
+# Resolved via `ros2 pkg prefix` rather than a hardcoded
+# /opt/rgbd_sync_ws/install/lib/... path: splatograph-rgbd-sync's own
+# published image is not guaranteed to be a --merge-install layout (its
+# per-package layout nests each package under install/<pkg_name>/ instead),
+# and `ros2 pkg prefix` resolves correctly either way via the ament index
+# that /opt/rgbd_sync_ws/install/setup.bash (sourced above) already set up.
+SYNC_NODE="$(ros2 pkg prefix splatograph_rgbd_sync)/lib/splatograph_rgbd_sync/sync_node"
 sync_pid=""
 
 # splatograph_rgbd_sync's SyncNode is the sole authoritative pairing owner

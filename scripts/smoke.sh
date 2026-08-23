@@ -12,8 +12,12 @@ command -v slam-launch >/dev/null
 # into a vendored external source tree), so this smoke test is the real
 # build-time regression guard for the migration.
 ros2 pkg prefix splatograph_rgbd_msgs >/dev/null
-ros2 pkg prefix splatograph_rgbd_sync >/dev/null
-test -x /opt/rgbd_sync_ws/install/lib/splatograph_rgbd_sync/sync_node
+# Resolved via `ros2 pkg prefix` rather than a hardcoded
+# /opt/rgbd_sync_ws/install/lib/... path: splatograph-rgbd-sync's own
+# published image is not guaranteed to be a --merge-install layout (its
+# per-package layout nests each package under install/<pkg_name>/ instead).
+RGBD_SYNC_PREFIX="$(ros2 pkg prefix splatograph_rgbd_sync)"
+test -x "${RGBD_SYNC_PREFIX}/lib/splatograph_rgbd_sync/sync_node"
 test -x /opt/orbslam3_ws/install/lib/ros2_orb_slam3/rgbd_node_cpp
 test -x /opt/orbslam3_ws/install/lib/ros2_orb_slam3/rgbd_inertial_node_cpp
 test -x /opt/orbslam3_ws/install/lib/ros2_orb_slam3/stereo_node_cpp

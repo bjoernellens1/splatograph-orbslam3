@@ -5,18 +5,21 @@
 # (confirmed: "fatal: could not read Username for 'https://github.com'"),
 # and this repo's CI has no credential that would cover a cross-repo git
 # clone anyway (GitHub-hosted runners, GITHUB_TOKEN scoped to this repo
-# only). Its own CI (splatograph-rgbd-sync#17) now publishes this image on
-# every push to main/tag, so pulling it needs only whatever pull access the
-# package's own visibility/Actions-access grants -- see that repo's #16 for
-# the remaining owner decision (public visibility vs. a per-repo grant).
-# Bumped deliberately, not on every upstream push, so this build stays
-# reproducible. Must be built from a commit including the [P0] "exact
-# authoritative pair contract" rewrite (pair_ordinal, publish_stamp, the
-# ns-precision fields) and the Jazzy `rclcpp::Time::to_msg()` fix
-# (splatograph-rgbd-sync#14, in main as of 4dbf038 -- 32b8b4a, this
-# Dockerfile's previous pin, predates that fix and does not compile on
-# Jazzy at all, independent of the credential question above).
-ARG RGBD_SYNC_IMAGE=ghcr.io/bjoernellens1/splatograph-rgbd-sync:sha-4dbf038
+# only). Its GHCR package is now public (splatograph-rgbd-sync#16), so an
+# anonymous pull of the tag below needs no credential at all -- verified
+# directly (`docker logout ghcr.io && docker pull ...` succeeds).
+#
+# Pinned by immutable content-addressed `sha-<short-sha>` tag (not a
+# floating branch/snapshot tag -- contrast splatograph core's manually-
+# bumped `rocm-python-base-snapshot-<arch>` convention) so this build stays
+# reproducible: bumped deliberately, not on every upstream push. Must be
+# built from a commit including the [P0] "exact authoritative pair
+# contract" rewrite (pair_ordinal, publish_stamp, the ns-precision fields),
+# the Jazzy `rclcpp::Time::to_msg()` fix (splatograph-rgbd-sync#14), the
+# QoS non-determinism fix (splatograph-rgbd-sync#18), and the tail-flush
+# fix (splatograph-rgbd-sync#19) -- current pin `e6c65ea` is main HEAD as
+# of all four; the prior pin `4dbf038` had only the Jazzy compile fix.
+ARG RGBD_SYNC_IMAGE=ghcr.io/bjoernellens1/splatograph-rgbd-sync:sha-e6c65ea
 
 FROM ${RGBD_SYNC_IMAGE} AS rgbd_sync
 

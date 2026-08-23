@@ -72,7 +72,7 @@ check "Dockerfile now invokes apply_patch.py (was previously never called on mai
 check "slam-launch passes rgbd_synced_topic to rgbd_node_cpp" \
     'grep -q "\-p rgbd_synced_topic:=\${RGBD_SYNCED_TOPIC}" scripts/slam-launch'
 check "slam-launch launches sync_node" \
-    'grep -q "SYNC_NODE=/opt/rgbd_sync_ws/install/lib/splatograph_rgbd_sync/sync_node" scripts/slam-launch'
+    'grep -q "SYNC_NODE=\"\$(ros2 pkg prefix splatograph_rgbd_sync)/lib/splatograph_rgbd_sync/sync_node\"" scripts/slam-launch'
 
 if [ "$fail" -ne 0 ]; then
     echo "test_rgbdsynced_migration.sh: FAILURES ABOVE" >&2
