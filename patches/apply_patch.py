@@ -10,9 +10,20 @@ Where:
 
 Edits applied:
   common.hpp / common.cpp / package.xml  — mono /slam/pose publisher
-  CMakeLists.txt                         — geometry_msgs + message_filters + rgbd_node_cpp
-  src/rgbd_example.cpp                   — new RGB-D ROS2 node (written, not patched)
+  CMakeLists.txt                         — geometry_msgs + message_filters + splatograph_rgbd_msgs + rgbd_node_cpp
+  src/rgbd_example.cpp                   — RGB-D ROS2 node, RGBDSynced-fed (written, not patched)
+  src/rgbd_inertial_example.cpp          — RGB-D-Inertial ROS2 node, RGBDSynced-fed (written, not patched)
+  src/stereo_example.cpp                 — Stereo ROS2 node, ExactTime (written, not patched)
+  src/stereo_inertial_example.cpp        — Stereo-Inertial ROS2 node, ExactTime (written, not patched)
   mono_driver_node.py                    — skip disk dataset read (live images only)
+
+2026-08-23 (#3): rgbd_example.cpp / rgbd_inertial_example.cpp were migrated
+off independent color/depth topics + message_filters::ApproximateTime onto a
+single splatograph_rgbd_msgs/RGBDSynced subscription (published by the
+sibling splatograph-rgbd-sync repo's SyncNode). stereo/stereo-inertial are
+out of scope for RGBDSynced (no depth stream) but were upgraded from
+ApproximateTime to ExactTime, since RealSense left/right IR is genuinely
+hardware-paired -- see splatograph's CLAUDE.md HARD CONSTRAINT on sync.
 """
 from __future__ import annotations
 
@@ -47,8 +58,20 @@ RGBD_NODE_CPP = """\
  *   voc_file_arg            path to ORB vocabulary (.txt or .bin)
  *   settings_file_path_arg  directory that contains <settings_name_arg>.yaml
  *   settings_name_arg       yaml basename without extension
- *   color_topic             raw colour image topic (default /camera/color/image_raw)
- *   depth_topic             raw depth image topic  (default /camera/depth/image_raw)
+ *   rgbd_synced_topic       splatograph_rgbd_msgs/RGBDSynced topic
+ *                           (default /camera/rgbd_synced)
+ *
+ * Migrated 2026-08-23 (splatograph-orbslam3#3) off independent color/depth
+ * topics + message_filters::ApproximateTime: this node now subscribes to a
+ * single, already-paired splatograph_rgbd_msgs/RGBDSynced message published
+ * by splatograph-rgbd-sync's SyncNode. That node owns pairing/correction at
+ * the hardware/driver-adjacent boundary (see splatograph's CLAUDE.md HARD
+ * CONSTRAINT: color/depth pairing must be solved once, upstream, with
+ * ExactTime/hardware sync -- never re-paired downstream with a sliding
+ * ApproximateTime window). Re-pairing the already-paired rgb+depth fields of
+ * a single RGBDSynced message down here would exactly reintroduce the
+ * out-of-order-pair bug class (a floor3 bag-replay ingestion stall + an
+ * ORB-SLAM3 SO3 relocalization NaN crash) that motivated this migration.
  *
  * Publishes geometry_msgs/PoseStamped on /slam/pose (Twc, frame_id="map").
  * Depth image must be 16-bit unsigned (mm); set DepthMapFactor: 1000.0 in the yaml.
@@ -57,9 +80,7 @@ RGBD_NODE_CPP = """\
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/image.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
-#include "message_filters/subscriber.h"
-#include "message_filters/synchronizer.h"
-#include "message_filters/sync_policies/approximate_time.h"
+#include "splatograph_rgbd_msgs/msg/rgbd_synced.hpp"
 #include <cv_bridge/cv_bridge.hpp>
 #include <opencv2/core/core.hpp>
 #include <Eigen/Dense>
@@ -67,42 +88,37 @@ RGBD_NODE_CPP = """\
 
 class RGBDNode : public rclcpp::Node
 {
-    using SyncPolicy = message_filters::sync_policies::ApproximateTime<
-        sensor_msgs::msg::Image, sensor_msgs::msg::Image>;
-
 public:
     RGBDNode() : Node("rgbd_node_cpp")
     {
         this->declare_parameter("voc_file_arg", "");
         this->declare_parameter("settings_file_path_arg", "");
         this->declare_parameter("settings_name_arg", "");
-        this->declare_parameter("color_topic", "/camera/color/image_raw");
-        this->declare_parameter("depth_topic", "/camera/depth/image_raw");
+        this->declare_parameter("rgbd_synced_topic", "/camera/rgbd_synced");
 
         auto voc    = this->get_parameter("voc_file_arg").as_string();
         auto sdir   = this->get_parameter("settings_file_path_arg").as_string();
         auto sname  = this->get_parameter("settings_name_arg").as_string();
-        auto ctopic = this->get_parameter("color_topic").as_string();
-        auto dtopic = this->get_parameter("depth_topic").as_string();
+        auto rgbd_topic = this->get_parameter("rgbd_synced_topic").as_string();
 
         std::string cfg = sdir + sname + ".yaml";
         RCLCPP_INFO(this->get_logger(),
-                    "vocab=%s  cfg=%s\\ncolor=%s  depth=%s",
-                    voc.c_str(), cfg.c_str(), ctopic.c_str(), dtopic.c_str());
+                    "vocab=%s  cfg=%s\\nrgbd_synced=%s",
+                    voc.c_str(), cfg.c_str(), rgbd_topic.c_str());
 
         pSLAM_ = new ORB_SLAM3::System(voc, cfg, ORB_SLAM3::System::RGBD, false);
 
         pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/slam/pose", 10);
 
-        color_sub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::Image>>(
-            this, ctopic);
-        depth_sub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::Image>>(
-            this, dtopic);
-        sync_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(
-            SyncPolicy(10), *color_sub_, *depth_sub_);
-        sync_->registerCallback(&RGBDNode::GrabRGBD, this);
+        // RGBDSynced is published by SyncNode with the default reliable,
+        // KeepLast(10) QoS (create_publisher's default) -- match it exactly
+        // rather than SensorDataQoS (best-effort), which would be QoS-
+        // incompatible with a reliable publisher on some RMWs.
+        rgbd_sub_ = this->create_subscription<splatograph_rgbd_msgs::msg::RGBDSynced>(
+            rgbd_topic, rclcpp::QoS(10),
+            std::bind(&RGBDNode::GrabRGBDSynced, this, std::placeholders::_1));
 
-        RCLCPP_INFO(this->get_logger(), "RGB-D ORB-SLAM3 node ready");
+        RCLCPP_INFO(this->get_logger(), "RGB-D ORB-SLAM3 node ready (RGBDSynced-fed)");
     }
 
     ~RGBDNode()
@@ -115,42 +131,39 @@ public:
     }
 
 private:
-    void GrabRGBD(const sensor_msgs::msg::Image::SharedPtr msgRGB,
-                  const sensor_msgs::msg::Image::SharedPtr msgD)
+    void GrabRGBDSynced(const splatograph_rgbd_msgs::msg::RGBDSynced::SharedPtr msg)
     {
         cv_bridge::CvImageConstPtr cv_rgb, cv_depth;
-        try { cv_rgb   = cv_bridge::toCvShare(msgRGB);  }
+        try { cv_rgb   = cv_bridge::toCvCopy(msg->rgb);  }
         catch (cv_bridge::Exception& e) {
             RCLCPP_ERROR(this->get_logger(), "cv_bridge RGB: %s", e.what()); return; }
-        try { cv_depth = cv_bridge::toCvShare(msgD); }
+        try { cv_depth = cv_bridge::toCvCopy(msg->depth); }
         catch (cv_bridge::Exception& e) {
             RCLCPP_ERROR(this->get_logger(), "cv_bridge depth: %s", e.what()); return; }
 
-        double t = msgRGB->header.stamp.sec + msgRGB->header.stamp.nanosec * 1e-9;
+        double t = msg->header.stamp.sec + msg->header.stamp.nanosec * 1e-9;
         Sophus::SE3f Tcw = pSLAM_->TrackRGBD(cv_rgb->image, cv_depth->image, t);
 
         Sophus::SE3f Twc = Tcw.inverse();
         Eigen::Vector3f tr = Twc.translation();
         Eigen::Quaternionf q  = Twc.unit_quaternion();
 
-        geometry_msgs::msg::PoseStamped msg;
-        msg.header.stamp    = msgRGB->header.stamp;
-        msg.header.frame_id = "map";
-        msg.pose.position.x    = static_cast<double>(tr.x());
-        msg.pose.position.y    = static_cast<double>(tr.y());
-        msg.pose.position.z    = static_cast<double>(tr.z());
-        msg.pose.orientation.x = static_cast<double>(q.x());
-        msg.pose.orientation.y = static_cast<double>(q.y());
-        msg.pose.orientation.z = static_cast<double>(q.z());
-        msg.pose.orientation.w = static_cast<double>(q.w());
-        pose_pub_->publish(msg);
+        geometry_msgs::msg::PoseStamped out;
+        out.header.stamp    = msg->header.stamp;
+        out.header.frame_id = "map";
+        out.pose.position.x    = static_cast<double>(tr.x());
+        out.pose.position.y    = static_cast<double>(tr.y());
+        out.pose.position.z    = static_cast<double>(tr.z());
+        out.pose.orientation.x = static_cast<double>(q.x());
+        out.pose.orientation.y = static_cast<double>(q.y());
+        out.pose.orientation.z = static_cast<double>(q.z());
+        out.pose.orientation.w = static_cast<double>(q.w());
+        pose_pub_->publish(out);
     }
 
     ORB_SLAM3::System* pSLAM_ = nullptr;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
-    std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::Image>> color_sub_;
-    std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::Image>> depth_sub_;
-    std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;
+    rclcpp::Subscription<splatograph_rgbd_msgs::msg::RGBDSynced>::SharedPtr rgbd_sub_;
 };
 
 int main(int argc, char** argv)
@@ -188,18 +201,21 @@ _POSE_PUB = """\
 RGBD_INERTIAL_NODE_CPP = """\
 /* RGB-D-Inertial ORB-SLAM3 node (Orbbec Femto VIO: mono colour + depth + IMU).
  * Params: voc_file_arg, settings_file_path_arg, settings_name_arg,
- *         color_topic, depth_topic, imu_topic (default /camera/imu).
- * Publishes /slam/pose (Twc, frame_id="map"). Config needs IMU.* + Tbc. */
+ *         rgbd_synced_topic (default /camera/rgbd_synced).
+ * Publishes /slam/pose (Twc, frame_id="map"). Config needs IMU.* + Tbc.
+ *
+ * Migrated 2026-08-23 (splatograph-orbslam3#3): subscribes to a single
+ * splatograph_rgbd_msgs/RGBDSynced message instead of independently
+ * ApproximateTime-pairing color+depth and separately queueing IMU samples.
+ * RGBDSynced.imu_samples already carries every IMU sample between the
+ * previous published frame's stamp and this frame's stamp (see
+ * splatograph-rgbd-sync's SyncNode/README), so the IMU windowing this node
+ * used to do by hand is now upstream, authoritative, single-owner work. */
 #include <iostream>
-#include <queue>
-#include <mutex>
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/image.hpp"
-#include "sensor_msgs/msg/imu.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
-#include "message_filters/subscriber.h"
-#include "message_filters/synchronizer.h"
-#include "message_filters/sync_policies/approximate_time.h"
+#include "splatograph_rgbd_msgs/msg/rgbd_synced.hpp"
 #include <cv_bridge/cv_bridge.hpp>
 #include <opencv2/core/core.hpp>
 #include <Eigen/Dense>
@@ -208,75 +224,53 @@ RGBD_INERTIAL_NODE_CPP = """\
 
 class RGBDInertialNode : public rclcpp::Node
 {
-    using SyncPolicy = message_filters::sync_policies::ApproximateTime<
-        sensor_msgs::msg::Image, sensor_msgs::msg::Image>;
 public:
     RGBDInertialNode() : Node("rgbd_inertial_node_cpp")
     {
         this->declare_parameter("voc_file_arg", "");
         this->declare_parameter("settings_file_path_arg", "");
         this->declare_parameter("settings_name_arg", "");
-        this->declare_parameter("color_topic", "/camera/color/image_raw");
-        this->declare_parameter("depth_topic", "/camera/depth/image_raw");
-        this->declare_parameter("imu_topic", "/camera/imu");
+        this->declare_parameter("rgbd_synced_topic", "/camera/rgbd_synced");
         auto voc   = this->get_parameter("voc_file_arg").as_string();
         auto sdir  = this->get_parameter("settings_file_path_arg").as_string();
         auto sname = this->get_parameter("settings_name_arg").as_string();
-        auto ctopic= this->get_parameter("color_topic").as_string();
-        auto dtopic= this->get_parameter("depth_topic").as_string();
-        auto itopic= this->get_parameter("imu_topic").as_string();
+        auto rgbd_topic = this->get_parameter("rgbd_synced_topic").as_string();
         std::string cfg = sdir + sname + ".yaml";
-        RCLCPP_INFO(this->get_logger(), "RGBD-Inertial vocab=%s cfg=%s\\ncolor=%s depth=%s imu=%s",
-                    voc.c_str(), cfg.c_str(), ctopic.c_str(), dtopic.c_str(), itopic.c_str());
+        RCLCPP_INFO(this->get_logger(), "RGBD-Inertial vocab=%s cfg=%s\\nrgbd_synced=%s",
+                    voc.c_str(), cfg.c_str(), rgbd_topic.c_str());
         pSLAM_ = new ORB_SLAM3::System(voc, cfg, ORB_SLAM3::System::IMU_RGBD, false);
         pose_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/slam/pose", 10);
-        imu_sub_ = this->create_subscription<sensor_msgs::msg::Imu>(
-            itopic, rclcpp::SensorDataQoS(),
-            std::bind(&RGBDInertialNode::GrabImu, this, std::placeholders::_1));
-        color_sub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::Image>>(this, ctopic);
-        depth_sub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::msg::Image>>(this, dtopic);
-        sync_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(
-            SyncPolicy(10), *color_sub_, *depth_sub_);
-        sync_->registerCallback(&RGBDInertialNode::GrabRGBD, this);
-        RCLCPP_INFO(this->get_logger(), "RGBD-Inertial ORB-SLAM3 node ready");
+        // See RGBD_NODE_CPP's identical comment: match SyncNode's default
+        // reliable, KeepLast(10) publisher QoS exactly.
+        rgbd_sub_ = this->create_subscription<splatograph_rgbd_msgs::msg::RGBDSynced>(
+            rgbd_topic, rclcpp::QoS(10),
+            std::bind(&RGBDInertialNode::GrabRGBDSynced, this, std::placeholders::_1));
+        RCLCPP_INFO(this->get_logger(), "RGBD-Inertial ORB-SLAM3 node ready (RGBDSynced-fed)");
     }
     ~RGBDInertialNode() { if (pSLAM_) { pSLAM_->Shutdown(); delete pSLAM_; } }
 private:
-    void GrabImu(const sensor_msgs::msg::Imu::SharedPtr msg)
-    { std::lock_guard<std::mutex> lk(imu_mtx_); imu_buf_.push(msg); }
-
-    void GrabRGBD(const sensor_msgs::msg::Image::SharedPtr msgRGB,
-                  const sensor_msgs::msg::Image::SharedPtr msgD)
+    void GrabRGBDSynced(const splatograph_rgbd_msgs::msg::RGBDSynced::SharedPtr msg)
     {
         cv_bridge::CvImageConstPtr cv_rgb, cv_depth;
-        try { cv_rgb = cv_bridge::toCvShare(msgRGB); }
+        try { cv_rgb = cv_bridge::toCvCopy(msg->rgb); }
         catch (cv_bridge::Exception& e) { RCLCPP_ERROR(this->get_logger(), "rgb: %s", e.what()); return; }
-        try { cv_depth = cv_bridge::toCvShare(msgD); }
+        try { cv_depth = cv_bridge::toCvCopy(msg->depth); }
         catch (cv_bridge::Exception& e) { RCLCPP_ERROR(this->get_logger(), "depth: %s", e.what()); return; }
-        double t = msgRGB->header.stamp.sec + msgRGB->header.stamp.nanosec * 1e-9;
+        double t = msg->header.stamp.sec + msg->header.stamp.nanosec * 1e-9;
         std::vector<ORB_SLAM3::IMU::Point> vImu;
-        {
-            std::lock_guard<std::mutex> lk(imu_mtx_);
-            while (!imu_buf_.empty()) {
-                auto& m = imu_buf_.front();
-                double ti = m->header.stamp.sec + m->header.stamp.nanosec * 1e-9;
-                if (ti > t) break;
-                vImu.emplace_back(m->linear_acceleration.x, m->linear_acceleration.y, m->linear_acceleration.z,
-                                  m->angular_velocity.x, m->angular_velocity.y, m->angular_velocity.z, ti);
-                imu_buf_.pop();
-            }
+        vImu.reserve(msg->imu_samples.size());
+        for (const auto & m : msg->imu_samples) {
+            double ti = m.header.stamp.sec + m.header.stamp.nanosec * 1e-9;
+            vImu.emplace_back(m.linear_acceleration.x, m.linear_acceleration.y, m.linear_acceleration.z,
+                              m.angular_velocity.x, m.angular_velocity.y, m.angular_velocity.z, ti);
         }
         Sophus::SE3f Tcw = pSLAM_->TrackRGBD(cv_rgb->image, cv_depth->image, t, vImu);
-        publishPose(Tcw, msgRGB->header.stamp);
+        publishPose(Tcw, msg->header.stamp);
     }
 __POSE_PUB__
     ORB_SLAM3::System* pSLAM_ = nullptr;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
-    rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
-    std::shared_ptr<message_filters::Subscriber<sensor_msgs::msg::Image>> color_sub_, depth_sub_;
-    std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;
-    std::queue<sensor_msgs::msg::Imu::SharedPtr> imu_buf_;
-    std::mutex imu_mtx_;
+    rclcpp::Subscription<splatograph_rgbd_msgs::msg::RGBDSynced>::SharedPtr rgbd_sub_;
 };
 int main(int argc, char** argv)
 { rclcpp::init(argc, argv); rclcpp::spin(std::make_shared<RGBDInertialNode>()); rclcpp::shutdown(); return 0; }
@@ -293,7 +287,7 @@ STEREO_NODE_CPP = """\
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "message_filters/subscriber.h"
 #include "message_filters/synchronizer.h"
-#include "message_filters/sync_policies/approximate_time.h"
+#include "message_filters/sync_policies/exact_time.h"
 #include <cv_bridge/cv_bridge.hpp>
 #include <opencv2/core/core.hpp>
 #include <Eigen/Dense>
@@ -301,7 +295,7 @@ STEREO_NODE_CPP = """\
 
 class StereoNode : public rclcpp::Node
 {
-    using SyncPolicy = message_filters::sync_policies::ApproximateTime<
+    using SyncPolicy = message_filters::sync_policies::ExactTime<
         sensor_msgs::msg::Image, sensor_msgs::msg::Image>;
 public:
     StereoNode() : Node("stereo_node_cpp")
@@ -364,7 +358,7 @@ STEREO_INERTIAL_NODE_CPP = """\
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "message_filters/subscriber.h"
 #include "message_filters/synchronizer.h"
-#include "message_filters/sync_policies/approximate_time.h"
+#include "message_filters/sync_policies/exact_time.h"
 #include <cv_bridge/cv_bridge.hpp>
 #include <opencv2/core/core.hpp>
 #include <Eigen/Dense>
@@ -373,7 +367,7 @@ STEREO_INERTIAL_NODE_CPP = """\
 
 class StereoInertialNode : public rclcpp::Node
 {
-    using SyncPolicy = message_filters::sync_policies::ApproximateTime<
+    using SyncPolicy = message_filters::sync_policies::ExactTime<
         sensor_msgs::msg::Image, sensor_msgs::msg::Image>;
 public:
     StereoInertialNode() : Node("stereo_inertial_node_cpp")
@@ -527,18 +521,41 @@ def main() -> None:
     else:
         print("package.xml already has geometry_msgs - skipping (idempotent rerun)")
 
+    # splatograph_rgbd_msgs (2026-08-23, #3): separate idempotent guard, same
+    # reasoning as the diagnostic_msgs-style guards elsewhere in this file --
+    # must not be folded into the geometry_msgs guard above, which
+    # short-circuits once geometry_msgs is already present.
+    pkg_text = pkg.read_text()
+    if "<depend>splatograph_rgbd_msgs</depend>" not in pkg_text and "<build_depend>splatograph_rgbd_msgs</build_depend>" not in pkg_text:
+        patch(
+            pkg,
+            [
+                (
+                    "  <build_depend>boost_serialization</build_depend>",
+                    "  <build_depend>splatograph_rgbd_msgs</build_depend>\n  <build_depend>boost_serialization</build_depend>",
+                ),
+                (
+                    "  <exec_depend>boost_serialization</exec_depend>",
+                    "  <exec_depend>splatograph_rgbd_msgs</exec_depend>\n  <exec_depend>boost_serialization</exec_depend>",
+                ),
+            ],
+            "package.xml (splatograph_rgbd_msgs)",
+        )
+    else:
+        print("package.xml already has splatograph_rgbd_msgs - skipping (idempotent rerun)")
+
     patch(
         cmk,
         [
-            # find_package: add geometry_msgs + message_filters before Pangolin
+            # find_package: add geometry_msgs + message_filters + splatograph_rgbd_msgs before Pangolin
             (
                 "find_package(Eigen3 3.3.0 REQUIRED) # Matched with Sophus\nfind_package(Pangolin REQUIRED)",
-                "find_package(Eigen3 3.3.0 REQUIRED) # Matched with Sophus\nfind_package(geometry_msgs REQUIRED)\nfind_package(message_filters REQUIRED)\nfind_package(Pangolin REQUIRED)",
+                "find_package(Eigen3 3.3.0 REQUIRED) # Matched with Sophus\nfind_package(geometry_msgs REQUIRED)\nfind_package(message_filters REQUIRED)\nfind_package(splatograph_rgbd_msgs REQUIRED)\nfind_package(Pangolin REQUIRED)",
             ),
-            # THIS_PACKAGE_INCLUDE_DEPENDS: add geometry_msgs + message_filters
+            # THIS_PACKAGE_INCLUDE_DEPENDS: add geometry_msgs + message_filters + splatograph_rgbd_msgs
             (
                 "set(THIS_PACKAGE_INCLUDE_DEPENDS\n  rclcpp\n  rclpy\n  std_msgs\n  sensor_msgs\n  # your_custom_msg_interface\n  cv_bridge\n  image_transport\n  OpenCV\n  Eigen3\n  Pangolin\n)",
-                "set(THIS_PACKAGE_INCLUDE_DEPENDS\n  rclcpp\n  rclpy\n  std_msgs\n  sensor_msgs\n  # your_custom_msg_interface\n  cv_bridge\n  image_transport\n  OpenCV\n  geometry_msgs\n  message_filters\n  Eigen3\n  Pangolin\n)",
+                "set(THIS_PACKAGE_INCLUDE_DEPENDS\n  rclcpp\n  rclpy\n  std_msgs\n  sensor_msgs\n  # your_custom_msg_interface\n  cv_bridge\n  image_transport\n  OpenCV\n  geometry_msgs\n  message_filters\n  splatograph_rgbd_msgs\n  Eigen3\n  Pangolin\n)",
             ),
             # Add rgbd_node_cpp executable after mono_node_cpp
             (
