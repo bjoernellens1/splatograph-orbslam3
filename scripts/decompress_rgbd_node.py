@@ -27,6 +27,10 @@ from sensor_msgs.msg import CompressedImage, Image
 from cv_bridge import CvBridge
 
 
+def _stamp(msg) -> float:
+    return float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) * 1e-9
+
+
 class DecompressRGBD(Node):
     def __init__(self):
         super().__init__("decompress_rgbd")
@@ -43,6 +47,15 @@ class DecompressRGBD(Node):
         self.sync = self.declare_parameter("sync", False).get_parameter_value().bool_value
         self.bridge = CvBridge()
         self.n_c = self.n_d = 0
+        # Issue #865 stage-bisection instrumentation: distinguish "the message
+        # never arrived at this node" from "it arrived and we dropped/failed to
+        # decode it". `arrived_*` counts callback entries; `n_c`/`n_d` count
+        # successful publishes; `decode_fail_*` is the difference's only cause.
+        self.arrived_c = self.arrived_d = 0
+        self.decode_fail_c = self.decode_fail_d = 0
+        self.last_c_stamp = self.last_d_stamp = 0.0
+        self.report_period = self.declare_parameter(
+            "report_period_sec", 0.0).get_parameter_value().double_value
 
         self.pub_color = self.create_publisher(Image, self.color_out, 10)
         self.pub_depth = self.create_publisher(Image, self.depth_out, 10)
@@ -58,12 +71,28 @@ class DecompressRGBD(Node):
         self.get_logger().info(
             f"decompress(sync={self.sync}): {self.color_in}->{self.color_out} ({self.color_encoding}), "
             f"{self.depth_in}->{self.depth_out} (16UC1)")
+        if self.report_period > 0.0:
+            self.create_timer(self.report_period, self.report_counts)
+
+    def report_counts(self, final=False):
+        self.get_logger().info(
+            f"{'FINAL ' if final else ''}LEDGER color arrived={self.arrived_c} "
+            f"published={self.n_c} decode_fail={self.decode_fail_c} "
+            f"last_stamp={self.last_c_stamp:.6f} | depth arrived={self.arrived_d} "
+            f"published={self.n_d} decode_fail={self.decode_fail_d} "
+            f"last_stamp={self.last_d_stamp:.6f}")
 
     def _synced(self, cmsg: CompressedImage, dmsg: CompressedImage):
         """Decode colour+depth and publish both with the COLOUR stamp."""
+        self.arrived_c += 1
+        self.arrived_d += 1
+        self.last_c_stamp = _stamp(cmsg)
+        self.last_d_stamp = _stamp(dmsg)
         cimg = cv2.imdecode(np.frombuffer(cmsg.data, np.uint8), cv2.IMREAD_COLOR)
         dimg = cv2.imdecode(np.frombuffer(dmsg.data, np.uint8), cv2.IMREAD_UNCHANGED)
         if cimg is None or dimg is None:
+            self.decode_fail_c += 1
+            self.decode_fail_d += 1
             return
         if self.color_encoding == "rgb8":
             cimg = cv2.cvtColor(cimg, cv2.COLOR_BGR2RGB)
@@ -77,9 +106,12 @@ class DecompressRGBD(Node):
         self.n_c += 1; self.n_d += 1
 
     def _color(self, msg: CompressedImage):
+        self.arrived_c += 1
+        self.last_c_stamp = _stamp(msg)
         buf = np.frombuffer(msg.data, np.uint8)
         img = cv2.imdecode(buf, cv2.IMREAD_COLOR)  # bgr8
         if img is None:
+            self.decode_fail_c += 1
             return
         if self.color_encoding == "rgb8":
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -89,9 +121,12 @@ class DecompressRGBD(Node):
         self.n_c += 1
 
     def _depth(self, msg: CompressedImage):
+        self.arrived_d += 1
+        self.last_d_stamp = _stamp(msg)
         buf = np.frombuffer(msg.data, np.uint8)
         img = cv2.imdecode(buf, cv2.IMREAD_UNCHANGED)  # uint16, mm
         if img is None:
+            self.decode_fail_d += 1
             return
         if img.dtype != np.uint16:
             img = img.astype(np.uint16)
@@ -120,6 +155,17 @@ def main():
               f"shutting down normally.", flush=True)
     finally:
         print(f"[decompress_rgbd] decompress done: color={node.n_c} depth={node.n_d}", flush=True)
+        # Issue #865: a plain `print` rather than the node logger -- by this
+        # point the rclpy context may already be torn down, which would make a
+        # logger call the one thing that swallows the final accounting.
+        print(
+            f"[decompress_rgbd] FINAL LEDGER color arrived={node.arrived_c} "
+            f"published={node.n_c} decode_fail={node.decode_fail_c} "
+            f"last_stamp={node.last_c_stamp:.6f} | depth arrived={node.arrived_d} "
+            f"published={node.n_d} decode_fail={node.decode_fail_d} "
+            f"last_stamp={node.last_d_stamp:.6f}",
+            flush=True,
+        )
         try:
             node.destroy_node()
         except Exception:
