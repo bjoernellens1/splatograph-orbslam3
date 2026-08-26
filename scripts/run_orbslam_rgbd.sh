@@ -15,6 +15,12 @@ set -eo pipefail
 BAG="$1"; CONFIG="$2"; OUTDIR="$3"; LABEL="${4:-run}"; RATE="${5:-1.0}"; DURATION="${6:-0}"
 PLAY_EXTRA=""
 [ "$DURATION" != "0" ] && PLAY_EXTRA="--playback-duration $DURATION"
+# Set EXTERNAL_RGBD_SYNC=1 when one already-running decode/rectify/SyncNode
+# pipeline owns the authoritative RGBDSynced stream for multiple consumers.
+# This is the only supported way to feed Splatograph and ORB-SLAM3 from the
+# same source identities; do not start a second local SyncNode in that case.
+EXTERNAL_RGBD_SYNC="${EXTERNAL_RGBD_SYNC:-0}"
+RGBD_SYNCED_TOPIC="${RGBD_SYNCED_TOPIC:-/camera/rgbd_synced}"
 
 source /opt/ros/jazzy/setup.bash
 source /opt/rgbd_sync_ws/install/setup.bash
@@ -39,26 +45,23 @@ now() { date +%s.%N; }
 T_start=$(now)
 INIT_TIMEOUT="${INIT_WAIT:-30}"
 
-# 1. decompress compressed color/depth -> raw Image (decode-only; no pairing
-#    -- see decompress_rgbd_node.py's own migration comment)
-python3 /scripts/decompress_rgbd_node.py --ros-args \
-  -p color_in:=/camera/color/image_raw/compressed \
-  -p depth_in:=/camera/depth/image_raw/compressed \
-  -p color_out:=/camera/color/image_raw \
-  -p depth_out:=/camera/depth/image_raw \
-  -p color_encoding:=bgr8 > "${OUTDIR}/${LABEL}.decompress.log" 2>&1 &
-DPID=$!
-
-# 1b. splatograph_rgbd_sync's SyncNode: sole authoritative color/depth(+IMU)
-#     pairing owner (#3 migration, replaces this script's former
-#     ApproximateTime `sync:=true` decompress-node option). Publishes
-#     RGBDSynced on /camera/rgbd_synced for the SLAM node below.
-"$SYNC_NODE" --ros-args \
-  -p color_topic:=/camera/color/image_raw \
-  -p depth_topic:=/camera/depth/image_raw \
-  -p imu_topic:=/camera/imu \
-  -r rgbd_synced:=/camera/rgbd_synced > "${OUTDIR}/${LABEL}.sync.log" 2>&1 &
-YPID=$!
+DPID=""; YPID=""
+if [ "$EXTERNAL_RGBD_SYNC" != "1" ]; then
+  # 1. decode-only transport stage; SyncNode owns all colour/depth pairing.
+  python3 /scripts/decompress_rgbd_node.py --ros-args \
+    -p color_in:=/camera/color/image_raw/compressed \
+    -p depth_in:=/camera/depth/image_raw/compressed \
+    -p color_out:=/camera/color/image_raw \
+    -p depth_out:=/camera/depth/image_raw \
+    -p color_encoding:=bgr8 > "${OUTDIR}/${LABEL}.decompress.log" 2>&1 &
+  DPID=$!
+  "$SYNC_NODE" --ros-args \
+    -p color_topic:=/camera/color/image_raw \
+    -p depth_topic:=/camera/depth/image_raw \
+    -p imu_topic:=/camera/imu \
+    -r rgbd_synced:="$RGBD_SYNCED_TOPIC" > "${OUTDIR}/${LABEL}.sync.log" 2>&1 &
+  YPID=$!
+fi
 
 # 2. ORB-SLAM3 RGB-D node (loads vocab). Wait for the node's "ready" log line
 #    (measures real init/vocab-load time) instead of a fixed conservative sleep.
@@ -66,7 +69,7 @@ YPID=$!
   -p voc_file_arg:="$VOC" \
   -p settings_file_path_arg:="$CDIR" \
   -p settings_name_arg:="$CNAME" \
-  -p rgbd_synced_topic:=/camera/rgbd_synced ${EXTRA_PARAMS:-} > "${OUTDIR}/${LABEL}.slam.log" 2>&1 &
+  -p rgbd_synced_topic:="$RGBD_SYNCED_TOPIC" ${EXTRA_PARAMS:-} > "${OUTDIR}/${LABEL}.slam.log" 2>&1 &
 SPID=$!
 SLAM_LOG="${OUTDIR}/${LABEL}.slam.log"
 for i in $(seq 1 "$((INIT_TIMEOUT*4))"); do
@@ -88,8 +91,11 @@ sleep 4
 
 # 5. shut down recorder + slam + decompress
 kill -INT "$RPID" 2>/dev/null || true; sleep 3
-kill -INT "$SPID" "$YPID" "$DPID" 2>/dev/null || true; sleep 2
-kill "$SPID" "$YPID" "$DPID" "$RPID" 2>/dev/null || true
+PIPELINE_PIDS=("$SPID")
+[ -n "$YPID" ] && PIPELINE_PIDS+=("$YPID")
+[ -n "$DPID" ] && PIPELINE_PIDS+=("$DPID")
+kill -INT "${PIPELINE_PIDS[@]}" 2>/dev/null || true; sleep 2
+kill "${PIPELINE_PIDS[@]}" "$RPID" 2>/dev/null || true
 wait 2>/dev/null || true
 
 # 6. evaluate trajectory vs O3D reference
