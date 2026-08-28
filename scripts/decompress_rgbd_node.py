@@ -17,6 +17,7 @@ Params (--ros-args -p ...):
   color_out  (default /camera/color/image_raw)
   depth_out  (default /camera/depth/image_raw)
   color_encoding (default bgr8)   # publish encoding for colour
+  sync_max_delta_ms (default 2.0) # hardware-like pairs only in sync mode
 """
 import numpy as np
 import cv2
@@ -25,6 +26,23 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CompressedImage, Image
 from cv_bridge import CvBridge
+
+
+def qualified_pair_gate(color_stamp_ns, depth_stamp_ns, last_color_stamp_ns, *, max_delta_ms):
+    """Fail closed before ORB sees a reordered or weakly paired RGB-D frame."""
+    if abs(int(color_stamp_ns) - int(depth_stamp_ns)) > float(max_delta_ms) * 1_000_000.0:
+        return False, "stamp_delta"
+    if last_color_stamp_ns is not None and int(color_stamp_ns) <= int(last_color_stamp_ns):
+        return False, "nonmonotonic"
+    return True, "qualified"
+
+
+def sync_slop_seconds(max_delta_ms):
+    return float(max_delta_ms) / 1_000.0
+
+
+def _stamp_ns(stamp):
+    return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
 
 
 class DecompressRGBD(Node):
@@ -41,8 +59,16 @@ class DecompressRGBD(Node):
         # but the bag stamps them ~100ms apart, which breaks RTAB-Map's approx
         # sync (mispaired frames -> wrong feature depth -> 0 inliers).
         self.sync = self.declare_parameter("sync", False).get_parameter_value().bool_value
+        self.sync_max_delta_ms = self.declare_parameter(
+            "sync_max_delta_ms", 2.0
+        ).get_parameter_value().double_value
+        if self.sync_max_delta_ms <= 0.0:
+            raise ValueError("sync_max_delta_ms must be positive")
         self.bridge = CvBridge()
         self.n_c = self.n_d = 0
+        self.last_sync_stamp_ns = None
+        self.sync_rejected_delta = 0
+        self.sync_rejected_nonmonotonic = 0
 
         self.pub_color = self.create_publisher(Image, self.color_out, 10)
         self.pub_depth = self.create_publisher(Image, self.depth_out, 10)
@@ -50,17 +76,44 @@ class DecompressRGBD(Node):
             from message_filters import Subscriber, ApproximateTimeSynchronizer
             cs = Subscriber(self, CompressedImage, self.color_in, qos_profile=qos_profile_sensor_data)
             ds = Subscriber(self, CompressedImage, self.depth_in, qos_profile=qos_profile_sensor_data)
-            self._ats = ApproximateTimeSynchronizer([cs, ds], queue_size=30, slop=0.15)
+            # Constrain candidate formation itself. Applying the envelope only
+            # after a 150 ms ApproximateTime match consumes the nearby depth
+            # sample and starves the later hardware-like color frame.
+            self._ats = ApproximateTimeSynchronizer(
+                [cs, ds], queue_size=30, slop=sync_slop_seconds(self.sync_max_delta_ms)
+            )
             self._ats.registerCallback(self._synced)
         else:
             self.create_subscription(CompressedImage, self.color_in, self._color, qos_profile_sensor_data)
             self.create_subscription(CompressedImage, self.depth_in, self._depth, qos_profile_sensor_data)
         self.get_logger().info(
             f"decompress(sync={self.sync}): {self.color_in}->{self.color_out} ({self.color_encoding}), "
-            f"{self.depth_in}->{self.depth_out} (16UC1)")
+            f"{self.depth_in}->{self.depth_out} (16UC1), "
+            f"sync_max_delta_ms={self.sync_max_delta_ms:.3f}")
 
     def _synced(self, cmsg: CompressedImage, dmsg: CompressedImage):
         """Decode colour+depth and publish both with the COLOUR stamp."""
+        color_stamp_ns = _stamp_ns(cmsg.header.stamp)
+        depth_stamp_ns = _stamp_ns(dmsg.header.stamp)
+        accepted, reason = qualified_pair_gate(
+            color_stamp_ns,
+            depth_stamp_ns,
+            self.last_sync_stamp_ns,
+            max_delta_ms=self.sync_max_delta_ms,
+        )
+        if not accepted:
+            if reason == "stamp_delta":
+                self.sync_rejected_delta += 1
+                rejected = self.sync_rejected_delta
+            else:
+                self.sync_rejected_nonmonotonic += 1
+                rejected = self.sync_rejected_nonmonotonic
+            if rejected == 1 or rejected % 100 == 0:
+                self.get_logger().warning(
+                    f"rejecting RGB-D pair reason={reason} color_ns={color_stamp_ns} "
+                    f"depth_ns={depth_stamp_ns} rejected={rejected}"
+                )
+            return
         cimg = cv2.imdecode(np.frombuffer(cmsg.data, np.uint8), cv2.IMREAD_COLOR)
         dimg = cv2.imdecode(np.frombuffer(dmsg.data, np.uint8), cv2.IMREAD_UNCHANGED)
         if cimg is None or dimg is None:
@@ -74,6 +127,7 @@ class DecompressRGBD(Node):
         co.header = cmsg.header
         do.header = cmsg.header  # re-stamp depth to the colour stamp (same capture)
         self.pub_color.publish(co); self.pub_depth.publish(do)
+        self.last_sync_stamp_ns = color_stamp_ns
         self.n_c += 1; self.n_d += 1
 
     def _color(self, msg: CompressedImage):
@@ -119,7 +173,12 @@ def main():
         print(f"[decompress_rgbd] spin() ended by context shutdown ({e}); "
               f"shutting down normally.", flush=True)
     finally:
-        print(f"[decompress_rgbd] decompress done: color={node.n_c} depth={node.n_d}", flush=True)
+        print(
+            f"[decompress_rgbd] decompress done: color={node.n_c} depth={node.n_d} "
+            f"rejected_delta={node.sync_rejected_delta} "
+            f"rejected_nonmonotonic={node.sync_rejected_nonmonotonic}",
+            flush=True,
+        )
         try:
             node.destroy_node()
         except Exception:
