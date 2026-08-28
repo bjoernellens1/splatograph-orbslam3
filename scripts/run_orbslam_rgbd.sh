@@ -13,6 +13,7 @@ set -eo pipefail
 # RATE default 1.0: profiling showed ORB-SLAM3 RGB-D is real-time at 30fps
 # (29.9 pose/s, 100% coverage at -r 1.0), so -r 0.5 only wastes time.
 BAG="$1"; CONFIG="$2"; OUTDIR="$3"; LABEL="${4:-run}"; RATE="${5:-1.0}"; DURATION="${6:-0}"
+DECOMP_SYNC_MAX_DELTA_MS="${DECOMP_SYNC_MAX_DELTA_MS:-2.0}"
 PLAY_EXTRA=""
 [ "$DURATION" != "0" ] && PLAY_EXTRA="--playback-duration $DURATION"
 
@@ -39,7 +40,8 @@ python3 /scripts/decompress_rgbd_node.py --ros-args \
   -p depth_in:=/camera/depth/image_raw/compressed \
   -p color_out:=/camera/color/image_raw \
   -p depth_out:=/camera/depth/image_raw \
-  -p color_encoding:=bgr8 -p sync:=${DECOMP_SYNC:-true} > "${OUTDIR}/${LABEL}.decompress.log" 2>&1 &
+  -p color_encoding:=bgr8 -p sync:=${DECOMP_SYNC:-true} \
+  -p sync_max_delta_ms:="$DECOMP_SYNC_MAX_DELTA_MS" > "${OUTDIR}/${LABEL}.decompress.log" 2>&1 &
 DPID=$!
 
 # 2. ORB-SLAM3 RGB-D node (loads vocab). Wait for the node's "ready" log line

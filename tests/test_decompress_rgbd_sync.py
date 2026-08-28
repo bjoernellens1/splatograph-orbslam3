@@ -11,6 +11,11 @@ _SPEC.loader.exec_module(_MODULE)
 
 
 class QualifiedPairGateTest(unittest.TestCase):
+    def test_runner_exposes_dataset_specific_sync_envelope(self):
+        runner = (Path(__file__).parents[1] / "scripts" / "run_orbslam_rgbd.sh").read_text()
+        self.assertIn("DECOMP_SYNC_MAX_DELTA_MS", runner)
+        self.assertIn("sync_max_delta_ms", runner)
+
     def test_pairing_slop_is_the_same_qualified_envelope(self):
         self.assertEqual(_MODULE.sync_slop_seconds(2.0), 0.002)
 
