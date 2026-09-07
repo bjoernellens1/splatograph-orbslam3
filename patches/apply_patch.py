@@ -137,6 +137,17 @@ public:
         if (pSLAM_) {
             pSLAM_->Shutdown();
             pSLAM_->SaveKeyFrameTrajectoryTUM("KeyFrameTrajectory.txt");
+            // Full per-frame FINAL (loop-closed, globally consistent)
+            // trajectory -- added 2026-09-07 for the offline "attainability
+            // bound vs causal stream" analysis (see
+            // scripts/tum_trajectory_to_pose_bag.py). Cheap: this is a
+            // second dump of data ORB-SLAM3 already tracked internally, no
+            // extra computation. NOTE: bakes this into the IMAGE only on
+            // the next `docker build` (apply_patch.py runs at image build
+            // time, not container start -- see Dockerfile builder stage);
+            // the running :jazzy-orbbec-v3 container needs an in-container
+            // incremental colcon rebuild to pick this up until then.
+            pSLAM_->SaveTrajectoryTUM("CameraTrajectory.txt");
             delete pSLAM_;
         }
     }
