@@ -32,14 +32,14 @@ class Writer(Node):
 def main():
     topic, path = sys.argv[1], sys.argv[2]
     comment = sys.argv[3] if len(sys.argv) > 3 else f"live {topic} stream"
-    rclpy.init()
+    rclpy.init(signal_handler_options=getattr(__import__("rclpy.signals", fromlist=["SignalHandlerOptions"]), "SignalHandlerOptions").NO)
     node = Writer(topic, path, comment)
-    signal.signal(signal.SIGINT, lambda *_: rclpy.shutdown())
-    signal.signal(signal.SIGTERM, lambda *_: rclpy.shutdown())
-    try:
-        rclpy.spin(node)
-    except Exception:
-        pass
+    stop = {"v": False}
+    signal.signal(signal.SIGINT, lambda *_: stop.__setitem__("v", True))
+    signal.signal(signal.SIGTERM, lambda *_: stop.__setitem__("v", True))
+    while not stop["v"]:
+        rclpy.spin_once(node, timeout_sec=0.2)
+    node.destroy_node(); rclpy.shutdown()
     node.f.flush(); node.f.close()
     print(f"[pose_stream_to_tum] wrote {node.n} poses to {path}")
 
