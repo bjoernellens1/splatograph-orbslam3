@@ -63,7 +63,7 @@ T_ready=$(now)
 echo "[run] node ready pid=$SPID"
 
 # 3. record causal estimate + reference
-ros2 bag record -s mcap -o "${OUTDIR}/${LABEL}_poses" /slam/pose /camera_pose > "${OUTDIR}/${LABEL}.record.log" 2>&1 &
+python3 "$(dirname "$0")/pose_stream_to_tum.py" /slam/pose "${OUTDIR}/${LABEL}_causal.txt" "live /slam/pose causal stream, ${LABEL}" > "${OUTDIR}/${LABEL}.record.log" 2>&1 &
 RPID=$!
 sleep 2
 
@@ -77,7 +77,7 @@ sleep 4
 # 5. graceful shutdown: SIGINT the recorder, then SIGINT the SLAM node and
 #    WAIT for it to exit on its own (its destructor writes the trajectory
 #    files) -- never SIGKILL it during normal operation.
-kill -INT "$RPID" 2>/dev/null || true; sleep 3
+kill -INT "$RPID" 2>/dev/null || true; for i in $(seq 1 20); do kill -0 "$RPID" 2>/dev/null || break; sleep 0.5; done
 echo "[run] sending SIGINT to SLAM node $SPID"
 kill -INT "$SPID" 2>/dev/null || true
 for i in $(seq 1 60); do
